@@ -1,0 +1,14 @@
+# Git
+.git
+# Binaries
+bin
+cmd/gophermart/gophermart
+tools
+# Other
+.gitignore
+.github
+.golangci.yml
+README.md
+SPECIFICATION.md
+.vscode
+.env

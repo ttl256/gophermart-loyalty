@@ -6,7 +6,16 @@ GOLANGCILINT_CFG := .golangci.yml
 
 .PHONY: test
 test:
-	$(GOCMD) test ./...
+	$(GOCMD) test -race ./...
+
+.PHONY: test/no-cache
+test/no-cache:
+	$(GOCMD) test -count=1 ./...
+
+.PHONY: test/cover
+test/cover:
+	$(GOCMD) test -coverprofile cover.out ./...
+	$(GOCMD) tool cover -html cover.out -o cover.html
 
 .PHONY: audit
 audit: audit/tidy audit/verify-deps audit/lint

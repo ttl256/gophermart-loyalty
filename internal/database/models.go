@@ -8,7 +8,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
+
+type Order struct {
+	Number     string
+	UserID     uuid.UUID
+	Status     string
+	Accrual    decimal.Decimal
+	UploadedAt time.Time
+}
 
 type User struct {
 	ID           uuid.UUID

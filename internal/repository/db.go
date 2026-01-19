@@ -152,6 +152,39 @@ func (m *DBStorage) getUserByLogin(ctx context.Context, login string) (database.
 	return dbUser, nil
 }
 
+func (m *DBStorage) RegisterOrder(ctx context.Context, userID uuid.UUID, order domain.OrderNumber) (uuid.UUID, error) {
+	tx, err := m.db.Begin(ctx)
+	if err != nil {
+		return uuid.UUID{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			if errRollback := tx.Rollback(ctx); errRollback != nil {
+				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
+			}
+		}
+	}()
+	qtx := m.queries.WithTx(tx)
+	idInsert, err := qtx.InsertOrder(ctx, database.InsertOrderParams{Number: string(order), UserID: userID})
+	if err == nil {
+		return idInsert, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return uuid.UUID{}, xerrors.WithStack(err)
+	}
+	id, err := qtx.GetOrderOwner(ctx, string(order))
+	if err != nil {
+		return uuid.UUID{}, xerrors.WithStack(err)
+	}
+	if id == userID {
+		return userID, domain.ErrOrderAlreadyUploadedByUser
+	}
+	return id, domain.ErrOrderOwnedByAnotherUser
+}
+
 func (m *DBStorage) RepoPing(ctx context.Context) error {
 	var attempt int
 	_, err := backoff.Retry(ctx, func() (bool, error) {

@@ -63,9 +63,10 @@ func TestRegisterLoginHandler(t *testing.T) {
 	authManager := auth.NewManager("test", 1*time.Hour)
 
 	h := handler.HTTPHandler{
-		AuthService: authSvc,
-		JWT:         authManager,
-		Logger:      slog.Default(),
+		AuthService:  authSvc,
+		OrderService: nil,
+		JWT:          authManager,
+		Logger:       slog.Default(),
 	}
 	srv := httptest.NewServer(h.Routes())
 	t.Cleanup(srv.Close)
@@ -83,20 +84,25 @@ func TestRegisterLoginHandler(t *testing.T) {
 			resp         *resty.Response
 			registerUUID uuid.UUID
 			loginUUID    uuid.UUID
+			c            *http.Cookie
 		)
 		registerReq := handler.RegisterRequest{Login: "user1", Password: "passwd1"}
 		resp, err = client.R().SetBody(registerReq).Post("/api/user/register")
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusOK, resp.StatusCode())
-		registerUUID, err = getAuthCookie(authManager, resp.Cookies())
+		c, err = getAuthCookie(resp.Cookies())
 		require.NoError(t, err, "unable to get Authorization cookie")
+		registerUUID, err = authManager.Parse(c.Value)
+		require.NoError(t, err, "unable to parse JWT cookie")
 
 		loginReq := registerReq
 		resp, err = client.R().SetBody(loginReq).Post("/api/user/login")
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusOK, resp.StatusCode())
-		loginUUID, err = getAuthCookie(authManager, resp.Cookies())
+		c, err = getAuthCookie(resp.Cookies())
 		require.NoError(t, err, "unable to get Authorization cookie")
+		loginUUID, err = authManager.Parse(c.Value)
+		require.NoError(t, err, "unable to parse JWT cookie")
 
 		assert.Equal(
 			t,
@@ -170,19 +176,155 @@ func TestRegisterLoginHandler(t *testing.T) {
 	})
 }
 
-func getAuthCookie(authManager *auth.Manager, cookies []*http.Cookie) (uuid.UUID, error) {
+func TestAuthMiddleware(t *testing.T) {
+	ctx := context.Background()
+	pg, err := testutil.StartPG(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		errClose := pg.Close(ctx)
+		if errClose != nil {
+			t.Logf("terminating postgres container: %v", err)
+		}
+	})
+
+	_ = logger.Initialize(slog.LevelInfo)
+
+	repo, err := repository.NewDBStorage(ctx, pg.DSN)
+	require.NoError(t, err)
+	t.Cleanup(repo.Close)
+	require.NoError(t, repo.RepoPing(ctx))
+	require.NoError(t, repo.Migrate())
+
+	authSvc := service.NewAuthService(repo)
+	authManager := auth.NewManager("test", 1*time.Hour)
+
+	h := handler.HTTPHandler{
+		AuthService:  authSvc,
+		OrderService: nil,
+		JWT:          authManager,
+		Logger:       slog.Default(),
+	}
+	srv := httptest.NewServer(h.Routes())
+	t.Cleanup(srv.Close)
+
+	client := resty.New().SetBaseURL(srv.URL).SetCookieJar(nil)
+	t.Cleanup(func() {
+		errClient := client.Close()
+		if errClient != nil {
+			t.Logf("closing http client: %v", err)
+		}
+	})
+
+	t.Run("registration and login", func(t *testing.T) {
+		var (
+			resp         *resty.Response
+			registerUUID uuid.UUID
+			authCookie   *http.Cookie
+		)
+		for _, uri := range []string{"/api/user/register", "/api/user/login"} {
+			t.Run(uri, func(t *testing.T) {
+				registerReq := handler.RegisterRequest{Login: "user1", Password: "passwd1"}
+				resp, err = client.R().SetBody(registerReq).Post(uri)
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusOK, resp.StatusCode())
+
+				authCookie, err = getAuthCookie(resp.Cookies())
+				require.NoError(t, err, "unable to get Authorization cookie")
+				registerUUID, err = authManager.Parse(authCookie.Value)
+				require.NoError(t, err, "unable to parse JWT cookie")
+
+				var body handler.HealthResponseWithID
+				resp, err = client.R().SetResult(&body).Get("/healthzp")
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusUnauthorized, resp.StatusCode())
+
+				resp, err = client.R().SetCookie(authCookie).SetResult(&body).Get("/healthzp")
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusOK, resp.StatusCode())
+
+				assert.Equal(t, registerUUID, body.ID, "User ID from cookie and healthzp don't match")
+			})
+		}
+	})
+}
+
+func getAuthCookie(cookies []*http.Cookie) (*http.Cookie, error) {
 	var authCookie *http.Cookie
 	for _, cookie := range cookies {
 		if cookie.Name == "Authorization" {
 			authCookie = cookie
+			break
 		}
 	}
 	if authCookie == nil {
-		return uuid.UUID{}, errors.New("expected Authorization cookie")
+		return nil, errors.New("expected Authorization cookie")
 	}
-	id, err := authManager.Parse(authCookie.Value)
-	if err != nil {
-		return uuid.UUID{}, err
+	return authCookie, nil
+}
+
+func TestRegisterOrder(t *testing.T) {
+	ctx := context.Background()
+	pg, err := testutil.StartPG(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		errClose := pg.Close(ctx)
+		if errClose != nil {
+			t.Logf("terminating postgres container: %v", err)
+		}
+	})
+
+	_ = logger.Initialize(slog.LevelInfo)
+
+	repo, err := repository.NewDBStorage(ctx, pg.DSN)
+	require.NoError(t, err)
+	t.Cleanup(repo.Close)
+	require.NoError(t, repo.RepoPing(ctx))
+	require.NoError(t, repo.Migrate())
+
+	authSvc := service.NewAuthService(repo)
+	authManager := auth.NewManager("test", 1*time.Hour)
+
+	orderSvc := service.NewOrderService(repo)
+
+	h := handler.HTTPHandler{
+		AuthService:  authSvc,
+		OrderService: orderSvc,
+		JWT:          authManager,
+		Logger:       slog.Default(),
 	}
-	return id, nil
+	srv := httptest.NewServer(h.Routes())
+	t.Cleanup(srv.Close)
+
+	client := resty.New().SetBaseURL(srv.URL)
+	t.Cleanup(func() {
+		errClient := client.Close()
+		if errClient != nil {
+			t.Logf("closing http client: %v", err)
+		}
+	})
+	registerReq := handler.RegisterRequest{Login: "user1", Password: "passwd1"}
+	resp, err := client.R().SetBody(registerReq).Post("/api/user/register")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+
+	resp, err = client.R().SetBody("49927398716").Post("/api/user/orders")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode())
+
+	resp, err = client.R().SetBody("49927398716").Post("/api/user/orders")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+
+	resp, err = client.R().SetBody("49927398717").Post("/api/user/orders")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode())
+
+	registerReq = handler.RegisterRequest{Login: "user2", Password: "passwd1"}
+	resp, err = client.R().SetBody(registerReq).Post("/api/user/register")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+
+	resp, err = client.R().SetBody("49927398716").Post("/api/user/orders")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode())
 }

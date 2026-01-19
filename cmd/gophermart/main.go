@@ -64,12 +64,14 @@ func run() error {
 	if cfg.Secret == "" {
 		cfg.Secret = rand.Text()
 	}
+	orderSvc := service.NewOrderService(repo)
 
 	// h := handler.NewHTTPHandler(authSvc, cfg.Secret, 1*time.Hour)
 	h := handler.HTTPHandler{
-		AuthService: authSvc,
-		JWT:         auth.NewManager(cfg.Secret, 1*time.Hour),
-		Logger:      slog.Default(),
+		AuthService:  authSvc,
+		OrderService: orderSvc,
+		JWT:          auth.NewManager(cfg.Secret, 1*time.Hour),
+		Logger:       slog.Default(),
 	}
 	srv := &http.Server{
 		Addr:         cfg.Address,

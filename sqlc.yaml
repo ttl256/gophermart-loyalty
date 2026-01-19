@@ -13,6 +13,10 @@ sql:
             go_type:
               import: "github.com/google/uuid"
               type: "UUID"
+          - column: "orders.accrual"
+            go_type:
+              import: "github.com/shopspring/decimal"
+              type: "Decimal"
           - db_type: "timestamptz"
             nullable: false
             go_type:

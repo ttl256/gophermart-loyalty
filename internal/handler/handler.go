@@ -1,26 +1,35 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/ttl256/gophermart-loyalty/internal/auth"
+	"github.com/ttl256/gophermart-loyalty/internal/domain"
 )
 
-type HTTPHandler struct {
-	logger *slog.Logger
+type AuthService interface {
+	RegisterUser(ctx context.Context, user domain.User, password string) (uuid.UUID, error)
+	LoginUser(ctx context.Context, login string, password string) (domain.User, error)
 }
 
-func NewHTTPHandler() *HTTPHandler {
-	return &HTTPHandler{
-		logger: slog.Default(),
-	}
+type HTTPHandler struct {
+	JWT         *auth.Manager
+	AuthService AuthService
+	Logger      *slog.Logger
 }
 
 func (h *HTTPHandler) Routes() *chi.Mux {
 	r := chi.NewRouter()
 	r.Get("/healthz", h.HealthHandler)
+	r.Post("/api/user/register", h.RegisterHandler)
+	r.Post("/api/user/login", h.LoginHandler)
 
 	return r
 }
@@ -28,7 +37,7 @@ func (h *HTTPHandler) Routes() *chi.Mux {
 func (h *HTTPHandler) HealthHandler(w http.ResponseWriter, _ *http.Request) {
 	data, err := json.Marshal(HealthResponse{Status: HealthStatusOk})
 	if err != nil {
-		h.logger.Error("", slog.Any("error", err))
+		h.Logger.Error("", slog.Any("error", err))
 		hErr := http.StatusInternalServerError
 		http.Error(w, http.StatusText(hErr), hErr)
 		return
@@ -36,4 +45,94 @@ func (h *HTTPHandler) HealthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+func (h *HTTPHandler) RegisterHandler(w http.ResponseWriter, r *http.Request) {
+	var req RegisterRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		h.Logger.Debug("bad request", slog.Any("error", err))
+		hErr := http.StatusBadRequest
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	if err = req.Validate(); err != nil {
+		h.Logger.Debug("bad request", slog.Any("error", err))
+		hErr := http.StatusBadRequest
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	id, err := h.AuthService.RegisterUser(r.Context(), domain.NewUser(req.Login), req.Password)
+	if err != nil {
+		if errors.Is(err, domain.ErrLoginExists) {
+			h.Logger.Debug("register user", slog.Any("error", err))
+			hErr := http.StatusConflict
+			http.Error(w, http.StatusText(hErr), hErr)
+			return
+		}
+		h.Logger.Error("register user", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	err = h.SetCookie(w, id)
+	if err != nil {
+		h.Logger.Error("issuing jwt", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *HTTPHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
+	var req RegisterRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		h.Logger.Debug("bad request", slog.Any("error", err))
+		hErr := http.StatusBadRequest
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	if err = req.Validate(); err != nil {
+		h.Logger.Debug("bad request", slog.Any("error", err))
+		hErr := http.StatusBadRequest
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	user, err := h.AuthService.LoginUser(r.Context(), req.Login, req.Password)
+	if err != nil {
+		if errors.Is(err, domain.ErrInvalidCredentials) {
+			h.Logger.Debug("login user", slog.Any("error", err))
+			hErr := http.StatusUnauthorized
+			http.Error(w, http.StatusText(hErr), hErr)
+			return
+		}
+		h.Logger.Error("login user", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	err = h.SetCookie(w, user.ID)
+	if err != nil {
+		h.Logger.Error("issuing jwt", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *HTTPHandler) SetCookie(w http.ResponseWriter, id uuid.UUID) error {
+	token, err := h.JWT.Issue(id)
+	if err != nil {
+		return fmt.Errorf("issuing jwt: %w", err)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "Authorization",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+	})
+	return nil
 }

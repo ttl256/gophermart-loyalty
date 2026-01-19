@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,9 +13,12 @@ import (
 	"time"
 
 	"github.com/alexflint/go-arg"
+	"github.com/ttl256/gophermart-loyalty/internal/auth"
 	"github.com/ttl256/gophermart-loyalty/internal/config"
 	"github.com/ttl256/gophermart-loyalty/internal/handler"
 	"github.com/ttl256/gophermart-loyalty/internal/logger"
+	"github.com/ttl256/gophermart-loyalty/internal/repository"
+	"github.com/ttl256/gophermart-loyalty/internal/service"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -42,7 +46,31 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	h := handler.NewHTTPHandler()
+	repo, err := repository.NewDBStorage(ctx, cfg.DSN)
+	if err != nil {
+		return fmt.Errorf("initializing repo: %w", err)
+	}
+	defer repo.Close()
+	err = repo.RepoPing(ctx)
+	if err != nil {
+		return fmt.Errorf("pinging repo: %w", err)
+	}
+	err = repo.Migrate()
+	if err != nil {
+		return fmt.Errorf("migration: %w", err)
+	}
+
+	authSvc := service.NewAuthService(repo)
+	if cfg.Secret == "" {
+		cfg.Secret = rand.Text()
+	}
+
+	// h := handler.NewHTTPHandler(authSvc, cfg.Secret, 1*time.Hour)
+	h := handler.HTTPHandler{
+		AuthService: authSvc,
+		JWT:         auth.NewManager(cfg.Secret, 1*time.Hour),
+		Logger:      slog.Default(),
+	}
 	srv := &http.Server{
 		Addr:         cfg.Address,
 		Handler:      h.Routes(),

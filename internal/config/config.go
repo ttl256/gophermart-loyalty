@@ -14,6 +14,7 @@ type Server struct {
 	Address        string     `arg:"-a,env:RUN_ADDRESS"`
 	DSN            string     `arg:"-d,env:DATABASE_URI"`
 	AccrualAddress string     `arg:"-r,env:ACCRUAL_SYSTEM_ADDRESS"`
+	Secret         string     `arg:"-s,env:SECRET"`
 	LogLevel       slog.Level `arg:"--loglevel,env:LOG_LEVEL"`
 }
 
@@ -22,6 +23,7 @@ func NewServer() *Server {
 		Address:        "localhost:8080",
 		DSN:            "",
 		AccrualAddress: "",
+		Secret:         "",
 		LogLevel:       slog.LevelInfo,
 	}
 }

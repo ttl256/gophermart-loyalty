@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -164,4 +165,18 @@ func (s *AuthSuite) TestReqEmptyFields() {
 		s.Require().NoError(err)
 		s.Equal(http.StatusBadRequest, resp.StatusCode())
 	}
+}
+
+func getAuthCookie(cookies []*http.Cookie) (*http.Cookie, error) {
+	var authCookie *http.Cookie
+	for _, cookie := range cookies {
+		if cookie.Name == "Authorization" {
+			authCookie = cookie
+			break
+		}
+	}
+	if authCookie == nil {
+		return nil, errors.New("expected Authorization cookie")
+	}
+	return authCookie, nil
 }

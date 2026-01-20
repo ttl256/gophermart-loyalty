@@ -40,7 +40,6 @@ func (h *HTTPHandler) Routes() *chi.Mux {
 
 	r.Group(func(r chi.Router) {
 		r.Use(h.AuthMiddleware)
-		r.Get("/healthzp", h.HealthHandlerProtected)
 		r.Post("/api/user/orders", h.UploadOrder)
 	})
 
@@ -59,25 +58,6 @@ func (h *HTTPHandler) HealthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }
-
-func (h *HTTPHandler) HealthHandlerProtected(w http.ResponseWriter, r *http.Request) {
-	id, ok := UserIDFromContext(r.Context())
-	if !ok {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
-	data, err := json.Marshal(HealthResponseWithID{Status: HealthStatusOk, ID: id})
-	if err != nil {
-		h.Logger.Error("", slog.Any("error", err))
-		hErr := http.StatusInternalServerError
-		http.Error(w, http.StatusText(hErr), hErr)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
-}
-
 func (h *HTTPHandler) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	err := json.NewDecoder(r.Body).Decode(&req)

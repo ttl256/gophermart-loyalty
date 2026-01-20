@@ -204,7 +204,10 @@ func (m *DBStorage) RepoPing(ctx context.Context) error {
 	return nil
 }
 
-func (m *DBStorage) Migrate() error {
+// MigrationAction ENUM(up, drop).
+type MigrationAction int //nolint: recvcheck //fine
+
+func (m *DBStorage) Migrate(action MigrationAction) error {
 	iofsDriver, err := iofs.New(migrations.Migrations, "migrations")
 	if err != nil {
 		return fmt.Errorf("creating iofs driver: %w", err)
@@ -219,14 +222,21 @@ func (m *DBStorage) Migrate() error {
 	if err != nil {
 		return fmt.Errorf("instantiating migration: %w", err)
 	}
-	if err = mig.Up(); err != nil {
+	var op func() error
+	switch action {
+	case MigrationActionUp:
+		op = mig.Up
+	case MigrationActionDrop:
+		op = mig.Drop
+	}
+	if err = op(); err != nil {
 		if !errors.Is(err, migrate.ErrNoChange) {
-			m.logger.Error("performing UP database migration", slog.Any("error", err))
-			return fmt.Errorf("performing UP database migration: %w", err)
+			m.logger.Error("performing database migration", slog.String("op", action.String()), slog.Any("error", err))
+			return fmt.Errorf("performing %s database migration: %w", action.String(), err)
 		}
 		m.logger.Info("performing migration: no change")
 		return nil
 	}
-	m.logger.Info("migration is complete")
+	m.logger.Info("migration is complete", slog.String("op", action.String()))
 	return nil
 }

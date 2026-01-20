@@ -37,10 +37,7 @@ func run() error {
 		}
 		return fmt.Errorf("building config: %w", err)
 	}
-	err = logger.Initialize(cfg.LogLevel)
-	if err != nil {
-		return fmt.Errorf("initializing logger: %w", err)
-	}
+	logger.Initialize(cfg.LogLevel)
 	logger := slog.Default()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -55,7 +52,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("pinging repo: %w", err)
 	}
-	err = repo.Migrate()
+	err = repo.Migrate(repository.MigrationActionUp)
 	if err != nil {
 		return fmt.Errorf("migration: %w", err)
 	}

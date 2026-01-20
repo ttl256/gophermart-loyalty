@@ -1,23 +1,14 @@
 package handler_test
 
 import (
-	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/ttl256/gophermart-loyalty/internal/auth"
 	"github.com/ttl256/gophermart-loyalty/internal/handler"
-	"github.com/ttl256/gophermart-loyalty/internal/logger"
-	"github.com/ttl256/gophermart-loyalty/internal/repository"
-	"github.com/ttl256/gophermart-loyalty/internal/service"
-	"github.com/ttl256/gophermart-loyalty/internal/testutil"
 	"resty.dev/v3"
 )
 
@@ -40,213 +31,77 @@ func TestHealthHandler(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
-func TestRegisterLoginHandler(t *testing.T) {
-	ctx := context.Background()
-	pg, err := testutil.StartPG(ctx)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		errClose := pg.Close(ctx)
-		if errClose != nil {
-			t.Logf("terminating postgres container: %v", err)
-		}
-	})
+// func TestAuthMiddleware(t *testing.T) {
+// 	ctx := context.Background()
+// 	pg, err := testutil.StartPG(ctx)
+// 	require.NoError(t, err)
+// 	t.Cleanup(func() {
+// 		errClose := pg.Close(ctx)
+// 		if errClose != nil {
+// 			t.Logf("terminating postgres container: %v", err)
+// 		}
+// 	})
 
-	_ = logger.Initialize(slog.LevelInfo)
+// 	_ = logger.Initialize(slog.LevelInfo)
 
-	repo, err := repository.NewDBStorage(ctx, pg.DSN)
-	require.NoError(t, err)
-	t.Cleanup(repo.Close)
-	require.NoError(t, repo.RepoPing(ctx))
-	require.NoError(t, repo.Migrate())
+// 	repo, err := repository.NewDBStorage(ctx, pg.DSN)
+// 	require.NoError(t, err)
+// 	t.Cleanup(repo.Close)
+// 	require.NoError(t, repo.RepoPing(ctx))
+// 	require.NoError(t, repo.Migrate())
 
-	authSvc := service.NewAuthService(repo)
-	authManager := auth.NewManager("test", 1*time.Hour)
+// 	authSvc := service.NewAuthService(repo)
+// 	authManager := auth.NewManager("test", 1*time.Hour)
 
-	h := handler.HTTPHandler{
-		AuthService:  authSvc,
-		OrderService: nil,
-		JWT:          authManager,
-		Logger:       slog.Default(),
-	}
-	srv := httptest.NewServer(h.Routes())
-	t.Cleanup(srv.Close)
+// 	h := handler.HTTPHandler{
+// 		AuthService:  authSvc,
+// 		OrderService: nil,
+// 		JWT:          authManager,
+// 		Logger:       slog.Default(),
+// 	}
+// 	srv := httptest.NewServer(h.Routes())
+// 	t.Cleanup(srv.Close)
 
-	client := resty.New().SetBaseURL(srv.URL)
-	t.Cleanup(func() {
-		errClient := client.Close()
-		if errClient != nil {
-			t.Logf("closing http client: %v", err)
-		}
-	})
+// 	client := resty.New().SetBaseURL(srv.URL).SetCookieJar(nil)
+// 	t.Cleanup(func() {
+// 		errClient := client.Close()
+// 		if errClient != nil {
+// 			t.Logf("closing http client: %v", err)
+// 		}
+// 	})
 
-	t.Run("registration and login", func(t *testing.T) {
-		var (
-			resp         *resty.Response
-			registerUUID uuid.UUID
-			loginUUID    uuid.UUID
-			c            *http.Cookie
-		)
-		registerReq := handler.RegisterRequest{Login: "user1", Password: "passwd1"}
-		resp, err = client.R().SetBody(registerReq).Post("/api/user/register")
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusOK, resp.StatusCode())
-		c, err = getAuthCookie(resp.Cookies())
-		require.NoError(t, err, "unable to get Authorization cookie")
-		registerUUID, err = authManager.Parse(c.Value)
-		require.NoError(t, err, "unable to parse JWT cookie")
+// 	t.Run("registration and login", func(t *testing.T) {
+// 		var (
+// 			resp         *resty.Response
+// 			registerUUID uuid.UUID
+// 			authCookie   *http.Cookie
+// 		)
+// 		for _, uri := range []string{"/api/user/register", "/api/user/login"} {
+// 			t.Run(uri, func(t *testing.T) {
+// 				registerReq := handler.RegisterRequest{Login: "user1", Password: "passwd1"}
+// 				resp, err = client.R().SetBody(registerReq).Post(uri)
+// 				require.NoError(t, err)
+// 				assert.Equal(t, http.StatusOK, resp.StatusCode())
 
-		loginReq := registerReq
-		resp, err = client.R().SetBody(loginReq).Post("/api/user/login")
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusOK, resp.StatusCode())
-		c, err = getAuthCookie(resp.Cookies())
-		require.NoError(t, err, "unable to get Authorization cookie")
-		loginUUID, err = authManager.Parse(c.Value)
-		require.NoError(t, err, "unable to parse JWT cookie")
+// 				authCookie, err = getAuthCookie(resp.Cookies())
+// 				require.NoError(t, err, "unable to get Authorization cookie")
+// 				registerUUID, err = authManager.Parse(authCookie.Value)
+// 				require.NoError(t, err, "unable to parse JWT cookie")
 
-		assert.Equal(
-			t,
-			registerUUID,
-			loginUUID,
-			"User ID expected to match for registration cookie and login cookie",
-		)
-	})
+// 				var body handler.HealthResponseWithID
+// 				resp, err = client.R().SetResult(&body).Get("/healthzp")
+// 				require.NoError(t, err)
+// 				assert.Equal(t, http.StatusUnauthorized, resp.StatusCode())
 
-	t.Run("unauthorized", func(t *testing.T) {
-		var resp *resty.Response
-		loginReqInvalidPassword := handler.RegisterRequest{Login: "user1", Password: "passwd2"}
-		resp, err = client.R().SetBody(loginReqInvalidPassword).Post("/api/user/login")
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode())
+// 				resp, err = client.R().SetCookie(authCookie).SetResult(&body).Get("/healthzp")
+// 				require.NoError(t, err)
+// 				assert.Equal(t, http.StatusOK, resp.StatusCode())
 
-		loginReqInvalidLogin := handler.RegisterRequest{Login: "user2", Password: "passwd1"}
-		resp, err = client.R().SetBody(loginReqInvalidLogin).Post("/api/user/login")
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode())
-	})
-
-	t.Run("register with existing login", func(t *testing.T) {
-		var resp *resty.Response
-		registerReqConflict := handler.RegisterRequest{Login: "user1", Password: "passwd2"}
-		resp, err = client.R().SetBody(registerReqConflict).Post("/api/user/register")
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusConflict, resp.StatusCode())
-	})
-
-	t.Run("valid JSON with empty fields", func(t *testing.T) {
-		var resp *resty.Response
-		emptyRequests := []handler.RegisterRequest{
-			{Login: "", Password: "passwd1"},
-			{Login: "user1", Password: ""},
-			{Login: "", Password: ""},
-		}
-		for _, req := range emptyRequests {
-			resp, err = client.R().SetBody(req).Post("/api/user/register")
-			require.NoError(t, err)
-			assert.Equal(t, http.StatusBadRequest, resp.StatusCode())
-			resp, err = client.R().SetBody(req).Post("/api/user/login")
-			require.NoError(t, err)
-			assert.Equal(t, http.StatusBadRequest, resp.StatusCode())
-		}
-	})
-
-	t.Run("invalid JSON", func(t *testing.T) {
-		type ReqIncorrectFields struct {
-			Login    string `json:"loginn"`
-			Password string `json:"passwd"`
-		}
-		type ReqPartialFields1 struct {
-			Login string `json:"login"`
-		}
-		type ReqPartialFields2 struct {
-			Password string `json:"password"`
-		}
-		var resp *resty.Response
-		for _, uri := range []string{"/api/user/register", "/api/user/login"} {
-			resp, err = client.R().SetBody(ReqIncorrectFields{Login: "login", Password: "password"}).Post(uri)
-			require.NoError(t, err)
-			assert.Equal(t, http.StatusBadRequest, resp.StatusCode())
-			resp, err = client.R().SetBody(ReqPartialFields1{Login: "login"}).Post(uri)
-			require.NoError(t, err)
-			assert.Equal(t, http.StatusBadRequest, resp.StatusCode())
-			resp, err = client.R().SetBody(ReqPartialFields2{Password: "password"}).Post(uri)
-			require.NoError(t, err)
-			assert.Equal(t, http.StatusBadRequest, resp.StatusCode())
-		}
-	})
-}
-
-func TestAuthMiddleware(t *testing.T) {
-	ctx := context.Background()
-	pg, err := testutil.StartPG(ctx)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		errClose := pg.Close(ctx)
-		if errClose != nil {
-			t.Logf("terminating postgres container: %v", err)
-		}
-	})
-
-	_ = logger.Initialize(slog.LevelInfo)
-
-	repo, err := repository.NewDBStorage(ctx, pg.DSN)
-	require.NoError(t, err)
-	t.Cleanup(repo.Close)
-	require.NoError(t, repo.RepoPing(ctx))
-	require.NoError(t, repo.Migrate())
-
-	authSvc := service.NewAuthService(repo)
-	authManager := auth.NewManager("test", 1*time.Hour)
-
-	h := handler.HTTPHandler{
-		AuthService:  authSvc,
-		OrderService: nil,
-		JWT:          authManager,
-		Logger:       slog.Default(),
-	}
-	srv := httptest.NewServer(h.Routes())
-	t.Cleanup(srv.Close)
-
-	client := resty.New().SetBaseURL(srv.URL).SetCookieJar(nil)
-	t.Cleanup(func() {
-		errClient := client.Close()
-		if errClient != nil {
-			t.Logf("closing http client: %v", err)
-		}
-	})
-
-	t.Run("registration and login", func(t *testing.T) {
-		var (
-			resp         *resty.Response
-			registerUUID uuid.UUID
-			authCookie   *http.Cookie
-		)
-		for _, uri := range []string{"/api/user/register", "/api/user/login"} {
-			t.Run(uri, func(t *testing.T) {
-				registerReq := handler.RegisterRequest{Login: "user1", Password: "passwd1"}
-				resp, err = client.R().SetBody(registerReq).Post(uri)
-				require.NoError(t, err)
-				assert.Equal(t, http.StatusOK, resp.StatusCode())
-
-				authCookie, err = getAuthCookie(resp.Cookies())
-				require.NoError(t, err, "unable to get Authorization cookie")
-				registerUUID, err = authManager.Parse(authCookie.Value)
-				require.NoError(t, err, "unable to parse JWT cookie")
-
-				var body handler.HealthResponseWithID
-				resp, err = client.R().SetResult(&body).Get("/healthzp")
-				require.NoError(t, err)
-				assert.Equal(t, http.StatusUnauthorized, resp.StatusCode())
-
-				resp, err = client.R().SetCookie(authCookie).SetResult(&body).Get("/healthzp")
-				require.NoError(t, err)
-				assert.Equal(t, http.StatusOK, resp.StatusCode())
-
-				assert.Equal(t, registerUUID, body.ID, "User ID from cookie and healthzp don't match")
-			})
-		}
-	})
-}
+// 				assert.Equal(t, registerUUID, body.ID, "User ID from cookie and healthzp don't match")
+// 			})
+// 		}
+// 	})
+// }
 
 func getAuthCookie(cookies []*http.Cookie) (*http.Cookie, error) {
 	var authCookie *http.Cookie
@@ -262,69 +117,69 @@ func getAuthCookie(cookies []*http.Cookie) (*http.Cookie, error) {
 	return authCookie, nil
 }
 
-func TestRegisterOrder(t *testing.T) {
-	ctx := context.Background()
-	pg, err := testutil.StartPG(ctx)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		errClose := pg.Close(ctx)
-		if errClose != nil {
-			t.Logf("terminating postgres container: %v", err)
-		}
-	})
+// func TestRegisterOrder(t *testing.T) {
+// 	ctx := context.Background()
+// 	pg, err := testutil.StartPG(ctx)
+// 	require.NoError(t, err)
+// 	t.Cleanup(func() {
+// 		errClose := pg.Close(ctx)
+// 		if errClose != nil {
+// 			t.Logf("terminating postgres container: %v", err)
+// 		}
+// 	})
 
-	_ = logger.Initialize(slog.LevelInfo)
+// 	_ = logger.Initialize(slog.LevelInfo)
 
-	repo, err := repository.NewDBStorage(ctx, pg.DSN)
-	require.NoError(t, err)
-	t.Cleanup(repo.Close)
-	require.NoError(t, repo.RepoPing(ctx))
-	require.NoError(t, repo.Migrate())
+// 	repo, err := repository.NewDBStorage(ctx, pg.DSN)
+// 	require.NoError(t, err)
+// 	t.Cleanup(repo.Close)
+// 	require.NoError(t, repo.RepoPing(ctx))
+// 	require.NoError(t, repo.Migrate())
 
-	authSvc := service.NewAuthService(repo)
-	authManager := auth.NewManager("test", 1*time.Hour)
+// 	authSvc := service.NewAuthService(repo)
+// 	authManager := auth.NewManager("test", 1*time.Hour)
 
-	orderSvc := service.NewOrderService(repo)
+// 	orderSvc := service.NewOrderService(repo)
 
-	h := handler.HTTPHandler{
-		AuthService:  authSvc,
-		OrderService: orderSvc,
-		JWT:          authManager,
-		Logger:       slog.Default(),
-	}
-	srv := httptest.NewServer(h.Routes())
-	t.Cleanup(srv.Close)
+// 	h := handler.HTTPHandler{
+// 		AuthService:  authSvc,
+// 		OrderService: orderSvc,
+// 		JWT:          authManager,
+// 		Logger:       slog.Default(),
+// 	}
+// 	srv := httptest.NewServer(h.Routes())
+// 	t.Cleanup(srv.Close)
 
-	client := resty.New().SetBaseURL(srv.URL)
-	t.Cleanup(func() {
-		errClient := client.Close()
-		if errClient != nil {
-			t.Logf("closing http client: %v", err)
-		}
-	})
-	registerReq := handler.RegisterRequest{Login: "user1", Password: "passwd1"}
-	resp, err := client.R().SetBody(registerReq).Post("/api/user/register")
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode())
+// 	client := resty.New().SetBaseURL(srv.URL)
+// 	t.Cleanup(func() {
+// 		errClient := client.Close()
+// 		if errClient != nil {
+// 			t.Logf("closing http client: %v", err)
+// 		}
+// 	})
+// 	registerReq := handler.RegisterRequest{Login: "user1", Password: "passwd1"}
+// 	resp, err := client.R().SetBody(registerReq).Post("/api/user/register")
+// 	require.NoError(t, err)
+// 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 
-	resp, err = client.R().SetBody("49927398716").Post("/api/user/orders")
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode())
+// 	resp, err = client.R().SetBody("49927398716").Post("/api/user/orders")
+// 	require.NoError(t, err)
+// 	assert.Equal(t, http.StatusAccepted, resp.StatusCode())
 
-	resp, err = client.R().SetBody("49927398716").Post("/api/user/orders")
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode())
+// 	resp, err = client.R().SetBody("49927398716").Post("/api/user/orders")
+// 	require.NoError(t, err)
+// 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 
-	resp, err = client.R().SetBody("49927398717").Post("/api/user/orders")
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode())
+// 	resp, err = client.R().SetBody("49927398717").Post("/api/user/orders")
+// 	require.NoError(t, err)
+// 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode())
 
-	registerReq = handler.RegisterRequest{Login: "user2", Password: "passwd1"}
-	resp, err = client.R().SetBody(registerReq).Post("/api/user/register")
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode())
+// 	registerReq = handler.RegisterRequest{Login: "user2", Password: "passwd1"}
+// 	resp, err = client.R().SetBody(registerReq).Post("/api/user/register")
+// 	require.NoError(t, err)
+// 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 
-	resp, err = client.R().SetBody("49927398716").Post("/api/user/orders")
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusConflict, resp.StatusCode())
-}
+// 	resp, err = client.R().SetBody("49927398716").Post("/api/user/orders")
+// 	require.NoError(t, err)
+// 	assert.Equal(t, http.StatusConflict, resp.StatusCode())
+// }

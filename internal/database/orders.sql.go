@@ -7,8 +7,10 @@ package database
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 const getOrderOwner = `-- name: GetOrderOwner :one
@@ -22,6 +24,45 @@ func (q *Queries) GetOrderOwner(ctx context.Context, number string) (uuid.UUID, 
 	var user_id uuid.UUID
 	err := row.Scan(&user_id)
 	return user_id, err
+}
+
+const getOrders = `-- name: GetOrders :many
+select number, status, accrual, uploaded_at
+from orders
+where user_id = $1
+order by uploaded_at desc
+`
+
+type GetOrdersRow struct {
+	Number     string
+	Status     string
+	Accrual    decimal.Decimal
+	UploadedAt time.Time
+}
+
+func (q *Queries) GetOrders(ctx context.Context, userID uuid.UUID) ([]GetOrdersRow, error) {
+	rows, err := q.db.Query(ctx, getOrders, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetOrdersRow
+	for rows.Next() {
+		var i GetOrdersRow
+		if err := rows.Scan(
+			&i.Number,
+			&i.Status,
+			&i.Accrual,
+			&i.UploadedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const insertOrder = `-- name: InsertOrder :one

@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/suite"
 	"github.com/ttl256/gophermart-loyalty/internal/auth"
+	"github.com/ttl256/gophermart-loyalty/internal/domain"
 	"github.com/ttl256/gophermart-loyalty/internal/handler"
 	"github.com/ttl256/gophermart-loyalty/internal/logger"
 	"github.com/ttl256/gophermart-loyalty/internal/repository"
@@ -37,6 +39,7 @@ type OrderSuite struct {
 	client             *resty.Client
 	validOrderNumber   string
 	invalidOrderNumber string
+	orderNumberSize    int
 }
 
 func (s *OrderSuite) SetupSuite() {
@@ -45,7 +48,7 @@ func (s *OrderSuite) SetupSuite() {
 	s.Require().NoError(err)
 	s.pg = pg
 
-	logger.Initialize(slog.LevelInfo)
+	logger.Initialize(slog.LevelDebug)
 
 	repo, err := repository.NewDBStorage(s.ctx, pg.DSN)
 	s.Require().NoError(err)
@@ -71,6 +74,7 @@ func (s *OrderSuite) SetupSuite() {
 
 	s.validOrderNumber = "49927398716"
 	s.invalidOrderNumber = "49927398717"
+	s.orderNumberSize = 20
 }
 
 func (s *OrderSuite) TearDownSuite() {
@@ -98,11 +102,11 @@ func (s *OrderSuite) TestCreateValidOrder() {
 	s.Require().NoError(err)
 	s.Equal(http.StatusOK, resp.StatusCode())
 
-	resp, err = s.client.R().SetBody(s.validOrderNumber).Post("/api/user/orders")
+	resp, err = s.client.R().SetBody(s.validOrderNumber).SetContentType("text/plain").Post("/api/user/orders")
 	s.Require().NoError(err)
 	s.Equal(http.StatusAccepted, resp.StatusCode())
 
-	resp, err = s.client.R().SetBody(s.validOrderNumber).Post("/api/user/orders")
+	resp, err = s.client.R().SetBody(s.validOrderNumber).SetContentType("text/plain").Post("/api/user/orders")
 	s.Require().NoError(err)
 	s.Equal(http.StatusOK, resp.StatusCode())
 }
@@ -114,7 +118,7 @@ func (s *OrderSuite) TestCreateInvalidOrder() {
 	s.Require().NoError(err)
 	s.Equal(http.StatusOK, resp.StatusCode())
 
-	resp, err = s.client.R().SetBody(s.invalidOrderNumber).Post("/api/user/orders")
+	resp, err = s.client.R().SetBody(s.invalidOrderNumber).SetContentType("text/plain").Post("/api/user/orders")
 	s.Require().NoError(err)
 	s.Equal(http.StatusUnprocessableEntity, resp.StatusCode())
 }
@@ -126,7 +130,7 @@ func (s *OrderSuite) TestCreateExistingOrder() {
 	s.Require().NoError(err)
 	s.Equal(http.StatusOK, resp.StatusCode())
 
-	resp, err = s.client.R().SetBody(s.validOrderNumber).Post("/api/user/orders")
+	resp, err = s.client.R().SetBody(s.validOrderNumber).SetContentType("text/plain").Post("/api/user/orders")
 	s.Require().NoError(err)
 	s.Equal(http.StatusAccepted, resp.StatusCode())
 
@@ -136,7 +140,7 @@ func (s *OrderSuite) TestCreateExistingOrder() {
 	s.Require().NoError(err)
 	s.Equal(http.StatusOK, resp.StatusCode())
 
-	resp, err = s.client.R().SetBody(s.validOrderNumber).Post("/api/user/orders")
+	resp, err = s.client.R().SetBody(s.validOrderNumber).SetContentType("text/plain").Post("/api/user/orders")
 	s.Require().NoError(err)
 	s.Equal(http.StatusConflict, resp.StatusCode())
 }
@@ -145,4 +149,134 @@ func (s *OrderSuite) TestUnauthorized() {
 	resp, err := s.client.R().SetBody(s.validOrderNumber).Post("/api/user/orders")
 	s.Require().NoError(err)
 	s.Equal(http.StatusUnauthorized, resp.StatusCode())
+
+	resp, err = s.client.R().Get("/api/user/orders")
+	s.Require().NoError(err)
+	s.Equal(http.StatusUnauthorized, resp.StatusCode())
+}
+
+func (s *OrderSuite) TestBadRequest() {
+	login, password := rand.Text(), rand.Text()
+	registerReq := handler.RegisterRequest{Login: login, Password: password}
+	resp, err := s.client.R().SetBody(registerReq).Post("/api/user/register")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	resp, err = s.client.R().SetBody(s.validOrderNumber).SetContentType("application/json").Post("/api/user/orders")
+	s.Require().NoError(err)
+	s.Equal(http.StatusBadRequest, resp.StatusCode())
+
+	resp, err = s.client.R().SetBody("").SetContentType("text/plain").Post("/api/user/orders")
+	s.Require().NoError(err)
+	s.Equal(http.StatusBadRequest, resp.StatusCode())
+}
+
+func (s *OrderSuite) TestGetNoOrders() {
+	login, password := rand.Text(), rand.Text()
+	registerReq := handler.RegisterRequest{Login: login, Password: password}
+	resp, err := s.client.R().SetBody(registerReq).Post("/api/user/register")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	resp, err = s.client.R().Get("/api/user/orders")
+	s.Require().NoError(err)
+	s.Equal(http.StatusNoContent, resp.StatusCode())
+}
+
+func (s *OrderSuite) TestOrdersSortedByTime() {
+	login, password := rand.Text(), rand.Text()
+	registerReq := handler.RegisterRequest{Login: login, Password: password}
+	resp, err := s.client.R().SetBody(registerReq).Post("/api/user/register")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	const numOrders = 10
+	orderNumbers := make([]domain.OrderNumber, 0, numOrders)
+	for range numOrders {
+		var order string
+		order, err = generateLuhn(s.orderNumberSize)
+		s.Require().NoError(err)
+		resp, err = s.client.R().SetBody(order).SetContentType("text/plain").Post("/api/user/orders")
+		s.Require().NoError(err)
+		s.Equal(http.StatusAccepted, resp.StatusCode())
+		orderNumbers = append(orderNumbers, domain.OrderNumber(order))
+	}
+
+	var orderResponse []handler.OrderResponse
+	resp, err = s.client.R().SetResult(&orderResponse).Get("/api/user/orders")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	s.Len(orderResponse, len(orderNumbers))
+
+	orderResponseNumbers := make([]domain.OrderNumber, 0, len(orderResponse))
+	for i := len(orderResponse) - 1; i >= 0; i-- {
+		orderResponseNumbers = append(orderResponseNumbers, orderResponse[i].Number)
+	}
+	s.Equal(orderNumbers, orderResponseNumbers)
+}
+
+func generateLuhn(size int) (string, error) {
+	if size < 2 {
+		return "", fmt.Errorf("size must be >= 2, got %d", size)
+	}
+
+	digits := make([]int, size)
+
+	for i := range size {
+		d, err := randDigit()
+		if err != nil {
+			return "", err
+		}
+		digits[i] = d
+	}
+
+	if digits[0] == 0 {
+		d, err := randDigitNonZero()
+		if err != nil {
+			return "", err
+		}
+		digits[0] = d
+	}
+
+	digits[size-1] = luhnCheckDigit(digits[:size-1])
+
+	out := make([]byte, size)
+	for i, d := range digits {
+		out[i] = byte('0' + d)
+	}
+	return string(out), nil
+}
+
+func randDigit() (int, error) {
+	var b [1]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, err
+	}
+	return int(b[0] % 10), nil
+}
+
+func randDigitNonZero() (int, error) {
+	var b [1]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, err
+	}
+	return int(b[0]%9) + 1, nil
+}
+
+func luhnCheckDigit(payload []int) int {
+	sum := 0
+	double := true
+	for i := len(payload) - 1; i >= 0; i-- {
+		d := payload[i]
+		if double {
+			d *= 2
+			if d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+		double = !double
+	}
+	return (10 - (sum % 10)) % 10
 }

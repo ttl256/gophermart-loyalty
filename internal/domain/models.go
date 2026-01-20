@@ -48,9 +48,6 @@ func ValidLuhn(s string) bool {
 	for i := len(s) - 1; i >= 0; i-- {
 		c := s[i]
 
-		if c == ' ' || c == '-' {
-			continue
-		}
 		if c < '0' || c > '9' {
 			return false
 		}
@@ -66,6 +63,9 @@ func ValidLuhn(s string) bool {
 		}
 		sum += n
 		double = !double
+	}
+	if digits == 0 {
+		return false
 	}
 
 	return sum%10 == 0

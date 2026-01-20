@@ -185,6 +185,45 @@ func (m *DBStorage) RegisterOrder(ctx context.Context, userID uuid.UUID, order d
 	return id, domain.ErrOrderOwnedByAnotherUser
 }
 
+func (m *DBStorage) GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.Order, error) {
+	tx, err := m.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			if errRollback := tx.Rollback(ctx); errRollback != nil {
+				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
+			}
+		}
+	}()
+	qtx := m.queries.WithTx(tx)
+	dbOrders, err := qtx.GetOrders(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("getting orders: %w", err)
+	}
+	orders := make([]domain.Order, 0, len(dbOrders))
+	for _, i := range dbOrders {
+		var status domain.OrderStatus
+		status, err = domain.ParseOrderStatus(i.Status)
+		if err != nil {
+			return nil, xerrors.WithStack(err)
+		}
+		order := domain.Order{
+			Number:     domain.OrderNumber(i.Number),
+			Status:     status,
+			UserID:     userID,
+			Accrual:    i.Accrual,
+			UploadedAt: i.UploadedAt,
+		}
+		orders = append(orders, order)
+	}
+	return orders, nil
+}
+
 func (m *DBStorage) RepoPing(ctx context.Context) error {
 	var attempt int
 	_, err := backoff.Retry(ctx, func() (bool, error) {

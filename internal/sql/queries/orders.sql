@@ -8,3 +8,9 @@ returning user_id;
 select user_id
 from orders
 where number = $1;
+
+-- name: GetOrders :many
+select number, status, accrual, uploaded_at
+from orders
+where user_id = $1
+order by uploaded_at desc;

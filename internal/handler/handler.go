@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ type AuthService interface {
 
 type OrderService interface {
 	RegisterOrder(ctx context.Context, userID uuid.UUID, order domain.OrderNumber) (uuid.UUID, error)
+	GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.Order, error)
 }
 
 type HTTPHandler struct {
@@ -41,6 +43,7 @@ func (h *HTTPHandler) Routes() *chi.Mux {
 	r.Group(func(r chi.Router) {
 		r.Use(h.AuthMiddleware)
 		r.Post("/api/user/orders", h.UploadOrder)
+		r.Get("/api/user/orders", h.GetOrders)
 	})
 
 	return r
@@ -154,6 +157,12 @@ func (h *HTTPHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
+	if r.Header.Get("Content-Type") != "text/plain" || r.ContentLength == 0 {
+		h.Logger.Debug("invalid request body")
+		hErr := http.StatusBadRequest
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) //nolint: mnd //fine
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -162,7 +171,7 @@ func (h *HTTPHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(hErr), hErr)
 		return
 	}
-	orderNumber, err := domain.NewOrderNumber(string(data))
+	orderNumber, err := domain.NewOrderNumber(string(bytes.TrimSpace(data)))
 	if err != nil {
 		if errors.Is(err, domain.ErrMalformedOrderNumber) {
 			h.Logger.Debug("malformed order number", slog.Any("error", err))
@@ -191,4 +200,44 @@ func (h *HTTPHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h *HTTPHandler) GetOrders(w http.ResponseWriter, r *http.Request) {
+	id, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+	orders, err := h.OrderService.GetOrders(r.Context(), id)
+	if err != nil {
+		h.Logger.Error("getting orders", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	if len(orders) == 0 {
+		h.Logger.Debug("no orders")
+		hErr := http.StatusNoContent
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	resp := make([]OrderResponse, 0, len(orders))
+	for _, i := range orders {
+		resp = append(resp, OrderResponse{
+			Number:     i.Number,
+			Status:     i.Status,
+			Accrual:    i.Accrual,
+			UploadedAt: i.UploadedAt,
+		})
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		h.Logger.Error("encoding json", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }

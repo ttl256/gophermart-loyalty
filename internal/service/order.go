@@ -10,6 +10,7 @@ import (
 
 type OrderRepo interface {
 	RegisterOrder(ctx context.Context, userID uuid.UUID, order domain.OrderNumber) (uuid.UUID, error)
+	GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.Order, error)
 }
 
 type OrderService struct {
@@ -32,4 +33,12 @@ func (s *OrderService) RegisterOrder(
 		return uuid.UUID{}, fmt.Errorf("register order: %w", err)
 	}
 	return id, nil
+}
+
+func (s *OrderService) GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.Order, error) {
+	orders, err := s.repo.GetOrders(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("getting orders: %w", err)
+	}
+	return orders, nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	xerrors "github.com/pkg/errors"
+	"github.com/shopspring/decimal"
 	"github.com/ttl256/gophermart-loyalty/internal/auth"
 	"github.com/ttl256/gophermart-loyalty/internal/database"
 	"github.com/ttl256/gophermart-loyalty/internal/domain"
@@ -168,7 +169,14 @@ func (m *DBStorage) RegisterOrder(ctx context.Context, userID uuid.UUID, order d
 		}
 	}()
 	qtx := m.queries.WithTx(tx)
-	idInsert, err := qtx.InsertOrder(ctx, database.InsertOrderParams{Number: string(order), UserID: userID})
+	idInsert, err := qtx.InsertOrder(
+		ctx, database.InsertOrderParams{
+			Number:  string(order),
+			UserID:  userID,
+			Status:  domain.OrderStatusNEW.String(),
+			Accrual: decimal.Decimal{},
+		},
+	)
 	if err == nil {
 		return idInsert, nil
 	}
@@ -222,6 +230,14 @@ func (m *DBStorage) GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.O
 		orders = append(orders, order)
 	}
 	return orders, nil
+}
+
+func (m *DBStorage) GetBalance(ctx context.Context, userID uuid.UUID) (domain.Balance, error) {
+	row, err := m.queries.GetBalance(ctx, userID)
+	if err != nil {
+		return domain.Balance{}, fmt.Errorf("getting balance: %w", err)
+	}
+	return domain.Balance{Current: row.Current, Withdrawn: row.Withdrawn}, nil
 }
 
 func (m *DBStorage) RepoPing(ctx context.Context) error {

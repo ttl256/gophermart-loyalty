@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,8 +12,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/suite"
 	"github.com/ttl256/gophermart-loyalty/internal/auth"
+	"github.com/ttl256/gophermart-loyalty/internal/database"
 	"github.com/ttl256/gophermart-loyalty/internal/domain"
 	"github.com/ttl256/gophermart-loyalty/internal/handler"
 	"github.com/ttl256/gophermart-loyalty/internal/logger"
@@ -214,6 +217,64 @@ func (s *OrderSuite) TestOrdersSortedByTime() {
 		orderResponseNumbers = append(orderResponseNumbers, orderResponse[i].Number)
 	}
 	s.Equal(orderNumbers, orderResponseNumbers)
+}
+
+func (s *OrderSuite) TestGetBalanceFromEmpty() {
+	login, password := rand.Text(), rand.Text()
+	registerReq := handler.RegisterRequest{Login: login, Password: password}
+	resp, err := s.client.R().SetBody(registerReq).Post("/api/user/register")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	var balanceResp handler.BalanceResponse
+	resp, err = s.client.R().SetResult(&balanceResp).Get("/api/user/balance")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+	s.Equal(handler.BalanceResponse{Current: 0, Withdrawn: 0}, balanceResp)
+}
+
+func (s *OrderSuite) TestGetBalanceNoWithdrawals() {
+	login, password := rand.Text(), rand.Text()
+	registerReq := handler.RegisterRequest{Login: login, Password: password}
+	resp, err := s.client.R().SetBody(registerReq).Post("/api/user/register")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	authCookie, err := getAuthCookie(resp.Cookies())
+	s.Require().NoError(err)
+	id, err := s.jwt.Parse(authCookie.Value)
+	s.Require().NoError(err)
+
+	queries := database.New(s.pool)
+	var total decimal.Decimal
+	for i := 1; i < 10; i++ {
+		var (
+			number  string
+			accrual decimal.Decimal
+		)
+		number, err = generateLuhn(s.orderNumberSize)
+		s.Require().NoError(err)
+		accrual, err = decimal.NewFromString(fmt.Sprintf("%[1]d.%[1]d%[1]d", i))
+		s.Require().NoError(err)
+		total = total.Add(accrual)
+		_, err = queries.InsertOrder(s.ctx, database.InsertOrderParams{
+			Number:  number,
+			UserID:  id,
+			Status:  domain.OrderStatusPROCESSED.String(),
+			Accrual: accrual,
+		})
+		s.Require().NoError(err)
+	}
+
+	s.T().Log(total)
+	wantBalance, _ := total.Float64()
+	want, err := json.Marshal(handler.BalanceResponse{Current: wantBalance, Withdrawn: 0})
+	s.Require().NoError(err)
+
+	resp, err = s.client.R().Get("/api/user/balance")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+	s.Equal(string(want), string(resp.Bytes()))
 }
 
 func generateLuhn(size int) (string, error) {

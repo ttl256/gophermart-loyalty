@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -24,6 +25,7 @@ type AuthService interface {
 type OrderService interface {
 	RegisterOrder(ctx context.Context, userID uuid.UUID, order domain.OrderNumber) (uuid.UUID, error)
 	GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.Order, error)
+	GetBalance(ctx context.Context, userID uuid.UUID) (domain.Balance, error)
 }
 
 type HTTPHandler struct {
@@ -44,6 +46,7 @@ func (h *HTTPHandler) Routes() *chi.Mux {
 		r.Use(h.AuthMiddleware)
 		r.Post("/api/user/orders", h.UploadOrder)
 		r.Get("/api/user/orders", h.GetOrders)
+		r.Get("/api/user/balance", h.GetBalance)
 	})
 
 	return r
@@ -157,7 +160,14 @@ func (h *HTTPHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
-	if r.Header.Get("Content-Type") != "text/plain" || r.ContentLength == 0 {
+	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		h.Logger.Error("parsing content-type", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	if contentType != "text/plain" || r.ContentLength == 0 {
 		h.Logger.Debug("invalid request body")
 		hErr := http.StatusBadRequest
 		http.Error(w, http.StatusText(hErr), hErr)
@@ -217,20 +227,70 @@ func (h *HTTPHandler) GetOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(orders) == 0 {
 		h.Logger.Debug("no orders")
-		hErr := http.StatusNoContent
-		http.Error(w, http.StatusText(hErr), hErr)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	resp := make([]OrderResponse, 0, len(orders))
 	for _, i := range orders {
+		v, _ := i.Accrual.Float64()
+		// if !exact {
+		// 	h.Logger.Error(
+		// 		"convert decimal to float is not exact",
+		// 		slog.Any("decimal", i.Accrual),
+		// 		slog.Float64("float", v),
+		// 	)
+		// 	hErr := http.StatusInternalServerError
+		// 	http.Error(w, http.StatusText(hErr), hErr)
+		// 	return
+		// }
 		resp = append(resp, OrderResponse{
 			Number:     i.Number,
 			Status:     i.Status,
-			Accrual:    i.Accrual,
+			Accrual:    v,
 			UploadedAt: i.UploadedAt,
 		})
 	}
 	data, err := json.Marshal(resp)
+	if err != nil {
+		h.Logger.Error("encoding json", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (h *HTTPHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
+	id, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+	balance, err := h.OrderService.GetBalance(r.Context(), id)
+	if err != nil {
+		h.Logger.Error("getting balance", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	var balanceResponse BalanceResponse
+	current, _ := balance.Current.Float64()
+	withdrawn, _ := balance.Withdrawn.Float64()
+	// if !exact {
+	// 	h.Logger.Error(
+	// 		"convert decimal to float is not exact",
+	// 		slog.Any("decimal", balance.Withdrawn),
+	// 		slog.Float64("float", withdrawn),
+	// 	)
+	// 	hErr := http.StatusInternalServerError
+	// 	http.Error(w, http.StatusText(hErr), hErr)
+	// 	return
+	// }
+	balanceResponse.Current = current
+	balanceResponse.Withdrawn = withdrawn
+	data, err := json.Marshal(balanceResponse)
 	if err != nil {
 		h.Logger.Error("encoding json", slog.Any("error", err))
 		hErr := http.StatusInternalServerError

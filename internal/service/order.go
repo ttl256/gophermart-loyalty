@@ -5,12 +5,14 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	xerrors "github.com/pkg/errors"
 	"github.com/ttl256/gophermart-loyalty/internal/domain"
 )
 
 type OrderRepo interface {
 	RegisterOrder(ctx context.Context, userID uuid.UUID, order domain.OrderNumber) (uuid.UUID, error)
 	GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.Order, error)
+	GetBalance(ctx context.Context, userID uuid.UUID) (domain.Balance, error)
 }
 
 type OrderService struct {
@@ -41,4 +43,12 @@ func (s *OrderService) GetOrders(ctx context.Context, userID uuid.UUID) ([]domai
 		return nil, fmt.Errorf("getting orders: %w", err)
 	}
 	return orders, nil
+}
+
+func (s *OrderService) GetBalance(ctx context.Context, userID uuid.UUID) (domain.Balance, error) {
+	balance, err := s.repo.GetBalance(ctx, userID)
+	if err != nil {
+		return domain.Balance{}, xerrors.WithStack(err)
+	}
+	return balance, nil
 }

@@ -25,3 +25,11 @@ type User struct {
 	PasswordHash string
 	CreatedAt    time.Time
 }
+
+type Withdrawal struct {
+	ID          uuid.UUID
+	UserID      uuid.UUID
+	OrderNumber string
+	Sum         decimal.Decimal
+	ProcessedAt time.Time
+}

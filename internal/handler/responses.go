@@ -3,7 +3,6 @@ package handler
 import (
 	"time"
 
-	"github.com/shopspring/decimal"
 	"github.com/ttl256/gophermart-loyalty/internal/domain"
 )
 
@@ -17,6 +16,11 @@ type HealthResponse struct {
 type OrderResponse struct {
 	Number     domain.OrderNumber `json:"number"`
 	Status     domain.OrderStatus `json:"status"`
-	Accrual    decimal.Decimal    `json:"accrual,omitzero"`
+	Accrual    float64            `json:"accrual,omitzero"`
 	UploadedAt time.Time          `json:"uploaded_at"`
+}
+
+type BalanceResponse struct {
+	Current   float64 `json:"current"`
+	Withdrawn float64 `json:"withdrawn"`
 }

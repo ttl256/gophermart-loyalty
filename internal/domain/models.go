@@ -70,3 +70,8 @@ func ValidLuhn(s string) bool {
 
 	return sum%10 == 0
 }
+
+type Balance struct {
+	Current   decimal.Decimal
+	Withdrawn decimal.Decimal
+}

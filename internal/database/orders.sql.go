@@ -13,6 +13,46 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const acquireUserLock = `-- name: AcquireUserLock :exec
+select pg_advisory_xact_lock(hashtextextended($1::uuid::text, 0))
+`
+
+func (q *Queries) AcquireUserLock(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, acquireUserLock, userID)
+	return err
+}
+
+const getBalance = `-- name: GetBalance :one
+with
+accr as (
+    select coalesce(sum(o.accrual), 0::numeric(12,2)) as total
+    from orders o
+    where o.user_id = $1
+        and o.status = 'PROCESSED'
+),
+wd as (
+    select coalesce(sum(w.sum), 0::numeric(12,2)) as total
+    from withdrawals w
+    where w.user_id = $1
+)
+select
+    (accr.total - wd.total)::numeric(12,2) as current,
+    wd.total::numeric(12,2) as withdrawn
+from accr, wd
+`
+
+type GetBalanceRow struct {
+	Current   decimal.Decimal
+	Withdrawn decimal.Decimal
+}
+
+func (q *Queries) GetBalance(ctx context.Context, userID uuid.UUID) (GetBalanceRow, error) {
+	row := q.db.QueryRow(ctx, getBalance, userID)
+	var i GetBalanceRow
+	err := row.Scan(&i.Current, &i.Withdrawn)
+	return i, err
+}
+
 const getOrderOwner = `-- name: GetOrderOwner :one
 select user_id
 from orders
@@ -65,21 +105,77 @@ func (q *Queries) GetOrders(ctx context.Context, userID uuid.UUID) ([]GetOrdersR
 	return items, nil
 }
 
+const getWithdrawals = `-- name: GetWithdrawals :many
+select order_number, sum, processed_at
+from withdrawals
+where user_id = $1
+order by processed_at desc
+`
+
+type GetWithdrawalsRow struct {
+	OrderNumber string
+	Sum         decimal.Decimal
+	ProcessedAt time.Time
+}
+
+func (q *Queries) GetWithdrawals(ctx context.Context, userID uuid.UUID) ([]GetWithdrawalsRow, error) {
+	rows, err := q.db.Query(ctx, getWithdrawals, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetWithdrawalsRow
+	for rows.Next() {
+		var i GetWithdrawalsRow
+		if err := rows.Scan(&i.OrderNumber, &i.Sum, &i.ProcessedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertOrder = `-- name: InsertOrder :one
-insert into orders (number, user_id)
-values ($1, $2)
+insert into orders (number, user_id, status, accrual)
+values ($1, $2, $3, $4)
 on conflict(number) do nothing
 returning user_id
 `
 
 type InsertOrderParams struct {
-	Number string
-	UserID uuid.UUID
+	Number  string
+	UserID  uuid.UUID
+	Status  string
+	Accrual decimal.Decimal
 }
 
 func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, insertOrder, arg.Number, arg.UserID)
+	row := q.db.QueryRow(ctx, insertOrder,
+		arg.Number,
+		arg.UserID,
+		arg.Status,
+		arg.Accrual,
+	)
 	var user_id uuid.UUID
 	err := row.Scan(&user_id)
 	return user_id, err
+}
+
+const insertWithdrawal = `-- name: InsertWithdrawal :exec
+insert into withdrawals (user_id, order_number, sum)
+values ($1, $2, $3)
+`
+
+type InsertWithdrawalParams struct {
+	UserID      uuid.UUID
+	OrderNumber string
+	Sum         decimal.Decimal
+}
+
+func (q *Queries) InsertWithdrawal(ctx context.Context, arg InsertWithdrawalParams) error {
+	_, err := q.db.Exec(ctx, insertWithdrawal, arg.UserID, arg.OrderNumber, arg.Sum)
+	return err
 }

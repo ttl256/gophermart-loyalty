@@ -9,4 +9,6 @@ var (
 	ErrMalformedOrderNumber       = errors.New("malformed order number")
 	ErrOrderAlreadyUploadedByUser = errors.New("order already uploaded by user")
 	ErrOrderOwnedByAnotherUser    = errors.New("order owned by another user")
+
+	ErrNotEnoughFunds = errors.New("not enough funds")
 )

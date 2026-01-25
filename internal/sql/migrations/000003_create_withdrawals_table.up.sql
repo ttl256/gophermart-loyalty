@@ -1,5 +1,5 @@
 create table if not exists withdrawals (
-    id uuid primary key,
+    id uuid primary key default gen_random_uuid(),
     user_id uuid not null references users(id),
     order_number text not null,
     sum numeric(12, 2) not null check (sum > 0),

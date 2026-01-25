@@ -1,6 +1,8 @@
 package handler
 
-import "errors"
+import (
+	"errors"
+)
 
 var errEmptyFields = errors.New("empty fields")
 
@@ -14,4 +16,9 @@ func (r RegisterRequest) Validate() error {
 		return errEmptyFields
 	}
 	return nil
+}
+
+type WithdrawalRequest struct {
+	Order string `json:"order"`
+	Sum   Money  `json:"sum"`
 }

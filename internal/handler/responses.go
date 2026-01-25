@@ -57,3 +57,9 @@ type BalanceResponse struct {
 	Current   Money `json:"current"`
 	Withdrawn Money `json:"withdrawn"`
 }
+
+type WithdrawalsResponse struct {
+	Order       domain.OrderNumber `json:"order"`
+	Sum         Money              `json:"sum"`
+	ProcessedAt time.Time          `json:"processed_at"`
+}

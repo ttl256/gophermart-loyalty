@@ -240,6 +240,81 @@ func (m *DBStorage) GetBalance(ctx context.Context, userID uuid.UUID) (domain.Ba
 	return domain.Balance{Current: row.Current, Withdrawn: row.Withdrawn}, nil
 }
 
+func (m *DBStorage) Withdraw(
+	ctx context.Context,
+	userID uuid.UUID,
+	order domain.OrderNumber,
+	sum decimal.Decimal,
+) error {
+	tx, err := m.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			if errRollback := tx.Rollback(ctx); errRollback != nil {
+				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
+			}
+		}
+	}()
+	qtx := m.queries.WithTx(tx)
+	err = qtx.AcquireUserLock(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("acquiring user lock: %w", err)
+	}
+	balance, err := qtx.GetBalance(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("getting balance: %w", err)
+	}
+	if balance.Current.Cmp(sum) < 0 {
+		return domain.ErrNotEnoughFunds
+	}
+
+	err = qtx.InsertWithdrawal(ctx, database.InsertWithdrawalParams{
+		UserID:      userID,
+		OrderNumber: string(order),
+		Sum:         sum,
+	})
+	if err != nil {
+		return fmt.Errorf("inserting withdrawal: %w", err)
+	}
+	return nil
+}
+
+func (m *DBStorage) GetWithdrawals(ctx context.Context, userID uuid.UUID) ([]domain.Withdrawal, error) {
+	tx, err := m.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			if errRollback := tx.Rollback(ctx); errRollback != nil {
+				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
+			}
+		}
+	}()
+	qtx := m.queries.WithTx(tx)
+	dbWithdrawals, err := qtx.GetWithdrawals(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("getting orders: %w", err)
+	}
+	withdrawals := make([]domain.Withdrawal, 0, len(dbWithdrawals))
+	for _, i := range dbWithdrawals {
+		withdrawals = append(withdrawals, domain.Withdrawal{
+			Order:       domain.OrderNumber(i.OrderNumber),
+			Sum:         i.Sum,
+			ProcessedAt: i.ProcessedAt,
+		})
+	}
+	return withdrawals, nil
+}
+
 func (m *DBStorage) RepoPing(ctx context.Context) error {
 	var attempt int
 	_, err := backoff.Retry(ctx, func() (bool, error) {

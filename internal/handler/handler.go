@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/ttl256/gophermart-loyalty/internal/auth"
 	"github.com/ttl256/gophermart-loyalty/internal/domain"
 )
@@ -26,6 +27,8 @@ type OrderService interface {
 	RegisterOrder(ctx context.Context, userID uuid.UUID, order domain.OrderNumber) (uuid.UUID, error)
 	GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.Order, error)
 	GetBalance(ctx context.Context, userID uuid.UUID) (domain.Balance, error)
+	Withdraw(ctx context.Context, userID uuid.UUID, order domain.OrderNumber, sum decimal.Decimal) error
+	GetWithdrawals(ctx context.Context, userID uuid.UUID) ([]domain.Withdrawal, error)
 }
 
 type HTTPHandler struct {
@@ -47,6 +50,8 @@ func (h *HTTPHandler) Routes() *chi.Mux {
 		r.Post("/api/user/orders", h.UploadOrder)
 		r.Get("/api/user/orders", h.GetOrders)
 		r.Get("/api/user/balance", h.GetBalance)
+		r.Post("/api/user/balance/withdraw", h.Withdraw)
+		r.Get("/api/user/withdrawals", h.GetWithdrawals)
 	})
 
 	return r
@@ -271,6 +276,86 @@ func (h *HTTPHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 	data, err := json.Marshal(balanceResponse)
 	if err != nil {
 		h.Logger.Error("encoding json", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (h *HTTPHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
+	id, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+	var req WithdrawalRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		h.Logger.Debug("bad request", slog.Any("error", err))
+		hErr := http.StatusBadRequest
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	orderNumber, err := domain.NewOrderNumber(req.Order)
+	if err != nil {
+		if errors.Is(err, domain.ErrMalformedOrderNumber) {
+			h.Logger.Debug("malformed order number", slog.Any("error", err))
+			hErr := http.StatusUnprocessableEntity
+			http.Error(w, http.StatusText(hErr), hErr)
+			return
+		}
+		h.Logger.Debug("parsing order number", slog.Any("error", err))
+		hErr := http.StatusBadRequest
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	err = h.OrderService.Withdraw(r.Context(), id, orderNumber, decimal.Decimal(req.Sum))
+	if err != nil {
+		if errors.Is(err, domain.ErrNotEnoughFunds) {
+			h.Logger.Debug("not enough funds", slog.Any("error", err))
+			hErr := http.StatusPaymentRequired
+			http.Error(w, http.StatusText(hErr), hErr)
+			return
+		}
+		h.Logger.Error("", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *HTTPHandler) GetWithdrawals(w http.ResponseWriter, r *http.Request) {
+	id, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+	withdrawals, err := h.OrderService.GetWithdrawals(r.Context(), id)
+	if err != nil {
+		h.Logger.Error("getting withdrawals", slog.Any("error", err))
+		hErr := http.StatusInternalServerError
+		http.Error(w, http.StatusText(hErr), hErr)
+		return
+	}
+	if len(withdrawals) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	withdrawalResponse := make([]WithdrawalsResponse, 0, len(withdrawals))
+	for _, i := range withdrawals {
+		withdrawalResponse = append(withdrawalResponse, WithdrawalsResponse{
+			Order:       i.Order,
+			Sum:         Money(i.Sum),
+			ProcessedAt: i.ProcessedAt,
+		})
+	}
+	data, err := json.Marshal(withdrawalResponse)
+	if err != nil {
+		h.Logger.Error("", slog.Any("error", err))
 		hErr := http.StatusInternalServerError
 		http.Error(w, http.StatusText(hErr), hErr)
 		return

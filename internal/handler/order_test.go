@@ -285,6 +285,94 @@ func (s *OrderSuite) TestGetBalanceNoWithdrawals() {
 	s.Equal(string(want), string(resp.Bytes()))
 }
 
+func (s *OrderSuite) TestGetNoWithdrawals() {
+	login, password := rand.Text(), rand.Text()
+	registerReq := handler.RegisterRequest{Login: login, Password: password}
+	resp, err := s.client.R().SetBody(registerReq).Post("/api/user/register")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	resp, err = s.client.R().Get("/api/user/withdrawals")
+	s.Require().NoError(err)
+	s.Equal(http.StatusNoContent, resp.StatusCode())
+	s.Zero(resp.Size())
+}
+
+func (s *OrderSuite) TestWithdrawNoBalance() {
+	login, password := rand.Text(), rand.Text()
+	registerReq := handler.RegisterRequest{Login: login, Password: password}
+	resp, err := s.client.R().SetBody(registerReq).Post("/api/user/register")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	resp, err = s.client.R().
+		SetBody(handler.WithdrawalRequest{s.validOrderNumber, handler.Money(decimal.NewFromInt(100))}).
+		Post("/api/user/balance/withdraw")
+	s.Require().NoError(err)
+	s.Equal(http.StatusPaymentRequired, resp.StatusCode())
+}
+
+func (s *OrderSuite) TestWithdraw() {
+	login, password := rand.Text(), rand.Text()
+	registerReq := handler.RegisterRequest{Login: login, Password: password}
+	resp, err := s.client.R().SetBody(registerReq).Post("/api/user/register")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	authCookie, err := getAuthCookie(resp.Cookies())
+	s.Require().NoError(err)
+	id, err := s.jwt.Parse(authCookie.Value)
+	s.Require().NoError(err)
+
+	const balanceTotal = 1000
+	number, err := generateLuhn(s.orderNumberSize)
+	s.Require().NoError(err)
+	queries := database.New(s.pool)
+	_, err = queries.InsertOrder(s.ctx, database.InsertOrderParams{
+		Number:  number,
+		UserID:  id,
+		Status:  domain.OrderStatusPROCESSED.String(),
+		Accrual: decimal.NewFromInt(balanceTotal),
+	})
+	s.Require().NoError(err)
+
+	const withdrawalsNum = 2
+	orderNumbers := make([]domain.OrderNumber, 0, withdrawalsNum)
+	for range withdrawalsNum {
+		var numberWithdraw string
+		numberWithdraw, err = generateLuhn(s.orderNumberSize)
+		s.Require().NoError(err)
+		orderNumbers = append(orderNumbers, domain.OrderNumber(numberWithdraw))
+		resp, err = s.client.R().
+			SetBody(handler.WithdrawalRequest{Order: numberWithdraw, Sum: handler.Money(decimal.NewFromInt(1))}).
+			Post("/api/user/balance/withdraw")
+		s.Require().NoError(err)
+		s.Equal(http.StatusOK, resp.StatusCode())
+	}
+	var withdrawalsResp []handler.WithdrawalsResponse
+	resp, err = s.client.R().SetResult(&withdrawalsResp).Get("/api/user/withdrawals")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+	s.Len(withdrawalsResp, len(orderNumbers))
+
+	withdrawalResponseNumbers := make([]domain.OrderNumber, 0, len(withdrawalsResp))
+	for i := len(withdrawalsResp) - 1; i >= 0; i-- {
+		withdrawalResponseNumbers = append(withdrawalResponseNumbers, withdrawalsResp[i].Order)
+	}
+	s.Equal(orderNumbers, withdrawalResponseNumbers)
+
+	want, err := json.Marshal(handler.BalanceResponse{
+		Current:   handler.Money(decimal.NewFromInt(balanceTotal - withdrawalsNum)),
+		Withdrawn: handler.Money(decimal.NewFromInt(withdrawalsNum)),
+	})
+	s.Require().NoError(err)
+
+	resp, err = s.client.R().Get("/api/user/balance")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+	s.Equal(string(want), string(resp.Bytes()))
+}
+
 func generateLuhn(size int) (string, error) {
 	if size < 2 {
 		return "", fmt.Errorf("size must be >= 2, got %d", size)

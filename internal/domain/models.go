@@ -75,3 +75,9 @@ type Balance struct {
 	Current   decimal.Decimal
 	Withdrawn decimal.Decimal
 }
+
+type Withdrawal struct {
+	Order       OrderNumber
+	Sum         decimal.Decimal
+	ProcessedAt time.Time
+}

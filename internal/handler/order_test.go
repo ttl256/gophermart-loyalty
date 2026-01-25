@@ -51,7 +51,7 @@ func (s *OrderSuite) SetupSuite() {
 	s.Require().NoError(err)
 	s.pg = pg
 
-	logger.Initialize(slog.LevelDebug)
+	logger.Initialize(slog.LevelInfo)
 
 	repo, err := repository.NewDBStorage(s.ctx, pg.DSN)
 	s.Require().NoError(err)
@@ -226,11 +226,16 @@ func (s *OrderSuite) TestGetBalanceFromEmpty() {
 	s.Require().NoError(err)
 	s.Equal(http.StatusOK, resp.StatusCode())
 
-	var balanceResp handler.BalanceResponse
-	resp, err = s.client.R().SetResult(&balanceResp).Get("/api/user/balance")
+	want, err := json.Marshal(handler.BalanceResponse{
+		Current:   handler.Money(decimal.Zero),
+		Withdrawn: handler.Money(decimal.Zero),
+	})
+	s.Require().NoError(err)
+
+	resp, err = s.client.R().Get("/api/user/balance")
 	s.Require().NoError(err)
 	s.Equal(http.StatusOK, resp.StatusCode())
-	s.Equal(handler.BalanceResponse{Current: 0, Withdrawn: 0}, balanceResp)
+	s.Equal(string(want), string(resp.Bytes()))
 }
 
 func (s *OrderSuite) TestGetBalanceNoWithdrawals() {
@@ -266,9 +271,12 @@ func (s *OrderSuite) TestGetBalanceNoWithdrawals() {
 		s.Require().NoError(err)
 	}
 
-	s.T().Log(total)
-	wantBalance, _ := total.Float64()
-	want, err := json.Marshal(handler.BalanceResponse{Current: wantBalance, Withdrawn: 0})
+	want, err := json.Marshal(
+		handler.BalanceResponse{
+			Current:   handler.Money(total),
+			Withdrawn: handler.Money(decimal.Zero),
+		},
+	)
 	s.Require().NoError(err)
 
 	resp, err = s.client.R().Get("/api/user/balance")

@@ -232,21 +232,10 @@ func (h *HTTPHandler) GetOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]OrderResponse, 0, len(orders))
 	for _, i := range orders {
-		v, _ := i.Accrual.Float64()
-		// if !exact {
-		// 	h.Logger.Error(
-		// 		"convert decimal to float is not exact",
-		// 		slog.Any("decimal", i.Accrual),
-		// 		slog.Float64("float", v),
-		// 	)
-		// 	hErr := http.StatusInternalServerError
-		// 	http.Error(w, http.StatusText(hErr), hErr)
-		// 	return
-		// }
 		resp = append(resp, OrderResponse{
 			Number:     i.Number,
 			Status:     i.Status,
-			Accrual:    v,
+			Accrual:    Money(i.Accrual),
 			UploadedAt: i.UploadedAt,
 		})
 	}
@@ -275,21 +264,10 @@ func (h *HTTPHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(hErr), hErr)
 		return
 	}
-	var balanceResponse BalanceResponse
-	current, _ := balance.Current.Float64()
-	withdrawn, _ := balance.Withdrawn.Float64()
-	// if !exact {
-	// 	h.Logger.Error(
-	// 		"convert decimal to float is not exact",
-	// 		slog.Any("decimal", balance.Withdrawn),
-	// 		slog.Float64("float", withdrawn),
-	// 	)
-	// 	hErr := http.StatusInternalServerError
-	// 	http.Error(w, http.StatusText(hErr), hErr)
-	// 	return
-	// }
-	balanceResponse.Current = current
-	balanceResponse.Withdrawn = withdrawn
+	balanceResponse := BalanceResponse{
+		Current:   Money(balance.Current),
+		Withdrawn: Money(balance.Withdrawn),
+	}
 	data, err := json.Marshal(balanceResponse)
 	if err != nil {
 		h.Logger.Error("encoding json", slog.Any("error", err))

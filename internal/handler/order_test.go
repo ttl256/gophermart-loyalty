@@ -22,6 +22,7 @@ import (
 	"github.com/ttl256/gophermart-loyalty/internal/repository"
 	"github.com/ttl256/gophermart-loyalty/internal/service"
 	"github.com/ttl256/gophermart-loyalty/internal/testutil"
+	"golang.org/x/sync/errgroup"
 	"resty.dev/v3"
 )
 
@@ -371,6 +372,65 @@ func (s *OrderSuite) TestWithdraw() {
 	s.Require().NoError(err)
 	s.Equal(http.StatusOK, resp.StatusCode())
 	s.Equal(string(want), string(resp.Bytes()))
+}
+
+func (s *OrderSuite) TestWithdrawConcurrent() {
+	login, password := rand.Text(), rand.Text()
+	registerReq := handler.RegisterRequest{Login: login, Password: password}
+	resp, err := s.client.R().SetBody(registerReq).Post("/api/user/register")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+
+	authCookie, err := getAuthCookie(resp.Cookies())
+	s.Require().NoError(err)
+	id, err := s.jwt.Parse(authCookie.Value)
+	s.Require().NoError(err)
+
+	const balanceTotal = 1000
+	number, err := generateLuhn(s.orderNumberSize)
+	s.Require().NoError(err)
+	queries := database.New(s.pool)
+	_, err = queries.InsertOrder(s.ctx, database.InsertOrderParams{
+		Number:  number,
+		UserID:  id,
+		Status:  domain.OrderStatusPROCESSED.String(),
+		Accrual: decimal.NewFromInt(balanceTotal),
+	})
+	s.Require().NoError(err)
+
+	g, _ := errgroup.WithContext(s.ctx)
+	for range balanceTotal {
+		g.Go(func() error {
+			return s.withdraw()
+		})
+	}
+	err = g.Wait()
+	s.Require().NoError(err)
+
+	var balanceResponse handler.BalanceResponse
+	resp, err = s.client.R().SetResult(&balanceResponse).Get("/api/user/balance")
+	s.Require().NoError(err)
+	s.Equal(http.StatusOK, resp.StatusCode())
+	s.True(decimal.NewFromInt(0).Equal(decimal.Decimal(balanceResponse.Current)))
+	s.True(decimal.NewFromInt(balanceTotal).Equal(decimal.Decimal(balanceResponse.Withdrawn)))
+}
+
+func (s *OrderSuite) withdraw() error {
+	s.T().Helper()
+	numberWithdraw, err := generateLuhn(s.orderNumberSize)
+	if err != nil {
+		return err
+	}
+	withdrawResp, err := s.client.R().
+		SetBody(handler.WithdrawalRequest{Order: numberWithdraw, Sum: handler.Money(decimal.NewFromInt(1))}).
+		Post("/api/user/balance/withdraw")
+	if err != nil {
+		return err
+	}
+	if withdrawResp.StatusCode() != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", withdrawResp.StatusCode())
+	}
+	return nil
 }
 
 func generateLuhn(size int) (string, error) {

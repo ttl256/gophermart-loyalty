@@ -6,11 +6,11 @@ GOLANGCILINT_CFG := .golangci.yml
 
 .PHONY: test
 test:
-	$(GOCMD) test -v ./...
+	$(GOCMD) test -race -v ./...
 
 .PHONY: test/no-cache
 test/no-cache:
-	$(GOCMD) test -count=1 ./...
+	$(GOCMD) test -race -v -count=1 ./...
 
 .PHONY: test/cover
 test/cover:

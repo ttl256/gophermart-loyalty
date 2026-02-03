@@ -1,3 +1,4 @@
+SHELL := $(shell command -v bash)
 GOCMD := go
 GOTOOLS_DIR := tools/bin
 GOLANGCILINT_CMD := $(GOTOOLS_DIR)/golangci-lint-v2
@@ -34,8 +35,9 @@ audit/lint:
 
 .PHONY: install-golangci-lint
 install-golangci-lint:
-	curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh" | sh -s -- -b $(GOTOOLS_DIR) $(GOLANGCILINT_VERSION)
-	ln $(GOTOOLS_DIR)/golangci-lint{,-v2}
+	curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh" \
+		| sh -s -- -b $(GOTOOLS_DIR) $(GOLANGCILINT_VERSION)
+	ln -f $(GOTOOLS_DIR)/golangci-lint{,-v2}
 
 .PHONY: run
 run:

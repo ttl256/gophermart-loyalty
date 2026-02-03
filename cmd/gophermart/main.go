@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alexflint/go-arg"
+	"github.com/ttl256/gophermart-loyalty/internal/accrual"
 	"github.com/ttl256/gophermart-loyalty/internal/auth"
 	"github.com/ttl256/gophermart-loyalty/internal/config"
 	"github.com/ttl256/gophermart-loyalty/internal/handler"
@@ -78,12 +79,19 @@ func run() error {
 		WriteTimeout: 30 * time.Second, //nolint: mnd //fine
 	}
 
+	const fetchAccrualFreq = 10 * time.Second
+	client := accrual.NewClient(cfg.AccrualAddress)
+	worker := accrual.NewWorker(repo, client, fetchAccrualFreq)
+
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		return runServer(srv, logger)
 	})
 	g.Go(func() error {
 		return shutdownServer(ctx, srv, logger)
+	})
+	g.Go(func() error {
+		return worker.Run(ctx)
 	})
 	err = g.Wait()
 	if err != nil {

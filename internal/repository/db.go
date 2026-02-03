@@ -315,6 +315,77 @@ func (m *DBStorage) GetWithdrawals(ctx context.Context, userID uuid.UUID) ([]dom
 	return withdrawals, nil
 }
 
+func (m *DBStorage) GetOrdersForProcessing(ctx context.Context) ([]domain.Order, error) {
+	tx, err := m.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			if errRollback := tx.Rollback(ctx); errRollback != nil {
+				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
+			}
+		}
+	}()
+	qtx := m.queries.WithTx(tx)
+	dbOrders, err := qtx.GetOrdersForProcessing(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting orders: %w", err)
+	}
+	orders := make([]domain.Order, 0, len(dbOrders))
+	for _, i := range dbOrders {
+		var status domain.OrderStatus
+		status, err = domain.ParseOrderStatus(i.Status)
+		if err != nil {
+			return nil, xerrors.WithStack(err)
+		}
+		order := domain.Order{
+			Number:     domain.OrderNumber(i.Number),
+			Status:     status,
+			UserID:     i.UserID,
+			Accrual:    i.Accrual,
+			UploadedAt: i.UploadedAt,
+		}
+		orders = append(orders, order)
+	}
+	return orders, nil
+}
+
+func (m *DBStorage) UpdateOrderStatus(
+	ctx context.Context,
+	order domain.OrderNumber,
+	status domain.OrderStatus,
+	accrual decimal.Decimal,
+) error {
+	tx, err := m.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			if errRollback := tx.Rollback(ctx); errRollback != nil {
+				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
+			}
+		}
+	}()
+	qtx := m.queries.WithTx(tx)
+	err = qtx.UpdateOrderStatus(ctx, database.UpdateOrderStatusParams{
+		Number:  string(order),
+		Status:  status.String(),
+		Accrual: accrual,
+	})
+	if err != nil {
+		return fmt.Errorf("updating order: %w", err)
+	}
+	return nil
+}
+
 func (m *DBStorage) RepoPing(ctx context.Context) error {
 	var attempt int
 	_, err := backoff.Retry(ctx, func() (bool, error) {

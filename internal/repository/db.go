@@ -81,31 +81,18 @@ func (m *DBStorage) createUser(
 	user domain.User,
 	passwordHash auth.PasswordHash,
 ) (uuid.UUID, error) {
-	tx, err := m.db.Begin(ctx)
-	if err != nil {
-		return uuid.UUID{}, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if err == nil {
-			err = tx.Commit(ctx)
+	return withTx(ctx, m, func(q *database.Queries) (uuid.UUID, error) {
+		params := database.InsertUserParams{
+			ID:           user.ID,
+			Login:        user.Login,
+			PasswordHash: string(passwordHash),
 		}
+		id, err := q.InsertUser(ctx, params)
 		if err != nil {
-			if errRollback := tx.Rollback(ctx); errRollback != nil {
-				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
-			}
+			return uuid.UUID{}, fmt.Errorf("saving user: %w", err)
 		}
-	}()
-	qtx := m.queries.WithTx(tx)
-	params := database.InsertUserParams{
-		ID:           user.ID,
-		Login:        user.Login,
-		PasswordHash: string(passwordHash),
-	}
-	id, err := qtx.InsertUser(ctx, params)
-	if err != nil {
-		return uuid.UUID{}, fmt.Errorf("saving user: %w", err)
-	}
-	return id, nil
+		return id, nil
+	})
 }
 
 func (m *DBStorage) GetUserByLogin(ctx context.Context, login string) (domain.User, auth.PasswordHash, error) {
@@ -131,105 +118,66 @@ func (m *DBStorage) GetUserByLogin(ctx context.Context, login string) (domain.Us
 }
 
 func (m *DBStorage) getUserByLogin(ctx context.Context, login string) (database.User, error) {
-	tx, err := m.db.Begin(ctx)
-	if err != nil {
-		return database.User{}, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if err == nil {
-			err = tx.Commit(ctx)
-		}
+	return withTx(ctx, m, func(q *database.Queries) (database.User, error) {
+		dbUser, err := q.SelectUserByLogin(ctx, login)
 		if err != nil {
-			if errRollback := tx.Rollback(ctx); errRollback != nil {
-				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
-			}
+			return database.User{}, fmt.Errorf("getting user: %w", err)
 		}
-	}()
-	qtx := m.queries.WithTx(tx)
-	dbUser, err := qtx.SelectUserByLogin(ctx, login)
-	if err != nil {
-		return database.User{}, fmt.Errorf("getting user: %w", err)
-	}
-	return dbUser, nil
+		return dbUser, nil
+	})
 }
 
 func (m *DBStorage) RegisterOrder(ctx context.Context, userID uuid.UUID, order domain.OrderNumber) (uuid.UUID, error) {
-	tx, err := m.db.Begin(ctx)
-	if err != nil {
-		return uuid.UUID{}, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
+	return withTx(ctx, m, func(q *database.Queries) (uuid.UUID, error) {
+		idInsert, err := q.InsertOrder(
+			ctx, database.InsertOrderParams{
+				Number:  string(order),
+				UserID:  userID,
+				Status:  domain.OrderStatusNEW.String(),
+				Accrual: decimal.Decimal{},
+			},
+		)
 		if err == nil {
-			err = tx.Commit(ctx)
+			return idInsert, nil
 		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return uuid.UUID{}, xerrors.WithStack(err)
+		}
+		id, err := q.GetOrderOwner(ctx, string(order))
 		if err != nil {
-			if errRollback := tx.Rollback(ctx); errRollback != nil {
-				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
-			}
+			return uuid.UUID{}, xerrors.WithStack(err)
 		}
-	}()
-	qtx := m.queries.WithTx(tx)
-	idInsert, err := qtx.InsertOrder(
-		ctx, database.InsertOrderParams{
-			Number:  string(order),
-			UserID:  userID,
-			Status:  domain.OrderStatusNEW.String(),
-			Accrual: decimal.Decimal{},
-		},
-	)
-	if err == nil {
-		return idInsert, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return uuid.UUID{}, xerrors.WithStack(err)
-	}
-	id, err := qtx.GetOrderOwner(ctx, string(order))
-	if err != nil {
-		return uuid.UUID{}, xerrors.WithStack(err)
-	}
-	if id == userID {
-		return userID, domain.ErrOrderAlreadyUploadedByUser
-	}
-	return id, domain.ErrOrderOwnedByAnotherUser
+		if id == userID {
+			return userID, domain.ErrOrderAlreadyUploadedByUser
+		}
+		return id, domain.ErrOrderOwnedByAnotherUser
+	})
 }
 
 func (m *DBStorage) GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.Order, error) {
-	tx, err := m.db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if err == nil {
-			err = tx.Commit(ctx)
-		}
+	return withTx(ctx, m, func(q *database.Queries) ([]domain.Order, error) {
+		dbOrders, err := q.GetOrders(ctx, userID)
 		if err != nil {
-			if errRollback := tx.Rollback(ctx); errRollback != nil {
-				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
+			return nil, fmt.Errorf("getting orders: %w", err)
+		}
+		orders := make([]domain.Order, 0, len(dbOrders))
+		for _, i := range dbOrders {
+			var status domain.OrderStatus
+			status, err = domain.ParseOrderStatus(i.Status)
+			if err != nil {
+				return nil, xerrors.WithStack(err)
 			}
+			order := domain.Order{
+				Number:     domain.OrderNumber(i.Number),
+				Status:     status,
+				UserID:     userID,
+				Accrual:    i.Accrual,
+				UploadedAt: i.UploadedAt,
+			}
+			orders = append(orders, order)
 		}
-	}()
-	qtx := m.queries.WithTx(tx)
-	dbOrders, err := qtx.GetOrders(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("getting orders: %w", err)
-	}
-	orders := make([]domain.Order, 0, len(dbOrders))
-	for _, i := range dbOrders {
-		var status domain.OrderStatus
-		status, err = domain.ParseOrderStatus(i.Status)
-		if err != nil {
-			return nil, xerrors.WithStack(err)
-		}
-		order := domain.Order{
-			Number:     domain.OrderNumber(i.Number),
-			Status:     status,
-			UserID:     userID,
-			Accrual:    i.Accrual,
-			UploadedAt: i.UploadedAt,
-		}
-		orders = append(orders, order)
-	}
-	return orders, nil
+		return orders, nil
+	})
 }
 
 func (m *DBStorage) GetBalance(ctx context.Context, userID uuid.UUID) (domain.Balance, error) {
@@ -246,112 +194,74 @@ func (m *DBStorage) Withdraw(
 	order domain.OrderNumber,
 	sum decimal.Decimal,
 ) error {
-	tx, err := m.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if err == nil {
-			err = tx.Commit(ctx)
-		}
+	_, err := withTx(ctx, m, func(q *database.Queries) (struct{}, error) {
+		err := q.AcquireUserLock(ctx, userID)
 		if err != nil {
-			if errRollback := tx.Rollback(ctx); errRollback != nil {
-				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
-			}
+			return struct{}{}, fmt.Errorf("acquiring user lock: %w", err)
 		}
-	}()
-	qtx := m.queries.WithTx(tx)
-	err = qtx.AcquireUserLock(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("acquiring user lock: %w", err)
-	}
-	balance, err := qtx.GetBalance(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("getting balance: %w", err)
-	}
-	if balance.Current.Cmp(sum) < 0 {
-		return domain.ErrNotEnoughFunds
-	}
+		balance, err := q.GetBalance(ctx, userID)
+		if err != nil {
+			return struct{}{}, fmt.Errorf("getting balance: %w", err)
+		}
+		if balance.Current.Cmp(sum) < 0 {
+			return struct{}{}, domain.ErrNotEnoughFunds
+		}
 
-	err = qtx.InsertWithdrawal(ctx, database.InsertWithdrawalParams{
-		UserID:      userID,
-		OrderNumber: string(order),
-		Sum:         sum,
+		err = q.InsertWithdrawal(ctx, database.InsertWithdrawalParams{
+			UserID:      userID,
+			OrderNumber: string(order),
+			Sum:         sum,
+		})
+		if err != nil {
+			return struct{}{}, fmt.Errorf("inserting withdrawal: %w", err)
+		}
+		return struct{}{}, nil
 	})
-	if err != nil {
-		return fmt.Errorf("inserting withdrawal: %w", err)
-	}
-	return nil
+	return err
 }
 
 func (m *DBStorage) GetWithdrawals(ctx context.Context, userID uuid.UUID) ([]domain.Withdrawal, error) {
-	tx, err := m.db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if err == nil {
-			err = tx.Commit(ctx)
-		}
+	return withTx(ctx, m, func(q *database.Queries) ([]domain.Withdrawal, error) {
+		dbWithdrawals, err := q.GetWithdrawals(ctx, userID)
 		if err != nil {
-			if errRollback := tx.Rollback(ctx); errRollback != nil {
-				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
-			}
+			return nil, fmt.Errorf("getting orders: %w", err)
 		}
-	}()
-	qtx := m.queries.WithTx(tx)
-	dbWithdrawals, err := qtx.GetWithdrawals(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("getting orders: %w", err)
-	}
-	withdrawals := make([]domain.Withdrawal, 0, len(dbWithdrawals))
-	for _, i := range dbWithdrawals {
-		withdrawals = append(withdrawals, domain.Withdrawal{
-			Order:       domain.OrderNumber(i.OrderNumber),
-			Sum:         i.Sum,
-			ProcessedAt: i.ProcessedAt,
-		})
-	}
-	return withdrawals, nil
+		withdrawals := make([]domain.Withdrawal, 0, len(dbWithdrawals))
+		for _, i := range dbWithdrawals {
+			withdrawals = append(withdrawals, domain.Withdrawal{
+				Order:       domain.OrderNumber(i.OrderNumber),
+				Sum:         i.Sum,
+				ProcessedAt: i.ProcessedAt,
+			})
+		}
+		return withdrawals, nil
+	})
 }
 
 func (m *DBStorage) GetOrdersForProcessing(ctx context.Context) ([]domain.Order, error) {
-	tx, err := m.db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if err == nil {
-			err = tx.Commit(ctx)
-		}
+	return withTx(ctx, m, func(q *database.Queries) ([]domain.Order, error) {
+		dbOrders, err := q.GetOrdersForProcessing(ctx)
 		if err != nil {
-			if errRollback := tx.Rollback(ctx); errRollback != nil {
-				err = errors.Join(err, fmt.Errorf("rollback tx: %w", errRollback))
+			return nil, fmt.Errorf("getting orders: %w", err)
+		}
+		orders := make([]domain.Order, 0, len(dbOrders))
+		for _, i := range dbOrders {
+			var status domain.OrderStatus
+			status, err = domain.ParseOrderStatus(i.Status)
+			if err != nil {
+				return nil, xerrors.WithStack(err)
 			}
+			order := domain.Order{
+				Number:     domain.OrderNumber(i.Number),
+				Status:     status,
+				UserID:     i.UserID,
+				Accrual:    i.Accrual,
+				UploadedAt: i.UploadedAt,
+			}
+			orders = append(orders, order)
 		}
-	}()
-	qtx := m.queries.WithTx(tx)
-	dbOrders, err := qtx.GetOrdersForProcessing(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("getting orders: %w", err)
-	}
-	orders := make([]domain.Order, 0, len(dbOrders))
-	for _, i := range dbOrders {
-		var status domain.OrderStatus
-		status, err = domain.ParseOrderStatus(i.Status)
-		if err != nil {
-			return nil, xerrors.WithStack(err)
-		}
-		order := domain.Order{
-			Number:     domain.OrderNumber(i.Number),
-			Status:     status,
-			UserID:     i.UserID,
-			Accrual:    i.Accrual,
-			UploadedAt: i.UploadedAt,
-		}
-		orders = append(orders, order)
-	}
-	return orders, nil
+		return orders, nil
+	})
 }
 
 func (m *DBStorage) UpdateOrderStatus(
@@ -360,9 +270,27 @@ func (m *DBStorage) UpdateOrderStatus(
 	status domain.OrderStatus,
 	accrual decimal.Decimal,
 ) error {
-	tx, err := m.db.Begin(ctx)
+	_, err := withTx(ctx, m, func(q *database.Queries) (struct{}, error) {
+		err := q.UpdateOrderStatus(ctx, database.UpdateOrderStatusParams{
+			Number:  string(order),
+			Status:  status.String(),
+			Accrual: accrual,
+		})
+		if err != nil {
+			return struct{}{}, fmt.Errorf("updating order: %w", err)
+		}
+		return struct{}{}, nil
+	})
+	return err
+}
+
+func withTx[T any]( //nolint: nonamedreturns //fine
+	ctx context.Context,
+	db *DBStorage, fn func(q *database.Queries) (T, error),
+) (result T, err error) {
+	tx, err := db.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return result, fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() {
 		if err == nil {
@@ -374,16 +302,8 @@ func (m *DBStorage) UpdateOrderStatus(
 			}
 		}
 	}()
-	qtx := m.queries.WithTx(tx)
-	err = qtx.UpdateOrderStatus(ctx, database.UpdateOrderStatusParams{
-		Number:  string(order),
-		Status:  status.String(),
-		Accrual: accrual,
-	})
-	if err != nil {
-		return fmt.Errorf("updating order: %w", err)
-	}
-	return nil
+	qtx := db.queries.WithTx(tx)
+	return fn(qtx)
 }
 
 func (m *DBStorage) RepoPing(ctx context.Context) error {

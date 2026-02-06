@@ -24,10 +24,10 @@ type AuthService interface {
 }
 
 type OrderService interface {
-	RegisterOrder(ctx context.Context, userID uuid.UUID, order domain.OrderNumber) (uuid.UUID, error)
+	RegisterOrder(ctx context.Context, userID uuid.UUID, order string) (uuid.UUID, error)
 	GetOrders(ctx context.Context, userID uuid.UUID) ([]domain.Order, error)
 	GetBalance(ctx context.Context, userID uuid.UUID) (domain.Balance, error)
-	Withdraw(ctx context.Context, userID uuid.UUID, order domain.OrderNumber, sum decimal.Decimal) error
+	Withdraw(ctx context.Context, userID uuid.UUID, order string, sum decimal.Decimal) error
 	GetWithdrawals(ctx context.Context, userID uuid.UUID) ([]domain.Withdrawal, error)
 }
 
@@ -186,7 +186,7 @@ func (h *HTTPHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(hErr), hErr)
 		return
 	}
-	orderNumber, err := domain.NewOrderNumber(string(bytes.TrimSpace(data)))
+	_, err = h.OrderService.RegisterOrder(r.Context(), id, string(bytes.TrimSpace(data)))
 	if err != nil {
 		if errors.Is(err, domain.ErrMalformedOrderNumber) {
 			h.Logger.Debug("malformed order number", slog.Any("error", err))
@@ -194,13 +194,6 @@ func (h *HTTPHandler) UploadOrder(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(hErr), hErr)
 			return
 		}
-		h.Logger.Debug("parsing order number", slog.Any("error", err))
-		hErr := http.StatusBadRequest
-		http.Error(w, http.StatusText(hErr), hErr)
-		return
-	}
-	_, err = h.OrderService.RegisterOrder(r.Context(), id, orderNumber)
-	if err != nil {
 		if errors.Is(err, domain.ErrOrderAlreadyUploadedByUser) {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -299,7 +292,7 @@ func (h *HTTPHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(hErr), hErr)
 		return
 	}
-	orderNumber, err := domain.NewOrderNumber(req.Order)
+	err = h.OrderService.Withdraw(r.Context(), id, req.Order, decimal.Decimal(req.Sum))
 	if err != nil {
 		if errors.Is(err, domain.ErrMalformedOrderNumber) {
 			h.Logger.Debug("malformed order number", slog.Any("error", err))
@@ -307,13 +300,6 @@ func (h *HTTPHandler) Withdraw(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(hErr), hErr)
 			return
 		}
-		h.Logger.Debug("parsing order number", slog.Any("error", err))
-		hErr := http.StatusBadRequest
-		http.Error(w, http.StatusText(hErr), hErr)
-		return
-	}
-	err = h.OrderService.Withdraw(r.Context(), id, orderNumber, decimal.Decimal(req.Sum))
-	if err != nil {
 		if errors.Is(err, domain.ErrNotEnoughFunds) {
 			h.Logger.Debug("not enough funds", slog.Any("error", err))
 			hErr := http.StatusPaymentRequired

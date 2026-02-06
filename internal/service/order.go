@@ -31,8 +31,12 @@ func NewOrderService(repo OrderRepo) *OrderService {
 func (s *OrderService) RegisterOrder(
 	ctx context.Context,
 	userID uuid.UUID,
-	order domain.OrderNumber,
+	orderRaw string,
 ) (uuid.UUID, error) {
+	order, err := domain.NewOrderNumber(orderRaw)
+	if err != nil {
+		return uuid.UUID{}, fmt.Errorf("invalid order number: %w", err)
+	}
 	id, err := s.repo.RegisterOrder(ctx, userID, order)
 	if err != nil {
 		return uuid.UUID{}, fmt.Errorf("register order: %w", err)
@@ -59,10 +63,14 @@ func (s *OrderService) GetBalance(ctx context.Context, userID uuid.UUID) (domain
 func (s *OrderService) Withdraw(
 	ctx context.Context,
 	userID uuid.UUID,
-	order domain.OrderNumber,
+	orderRaw string,
 	sum decimal.Decimal,
 ) error {
-	err := s.repo.Withdraw(ctx, userID, order, sum)
+	order, err := domain.NewOrderNumber(orderRaw)
+	if err != nil {
+		return fmt.Errorf("invalid order number: %w", err)
+	}
+	err = s.repo.Withdraw(ctx, userID, order, sum)
 	if err != nil {
 		return fmt.Errorf("withdrawal: %w", err)
 	}
